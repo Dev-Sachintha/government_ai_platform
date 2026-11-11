@@ -1,5 +1,7 @@
+import hmac
 import os
 import re
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
@@ -11,15 +13,44 @@ from streamlit_autorefresh import st_autorefresh
 from db_utils import init_db, is_safe_select, log_event
 from validation_utils import validate_and_restore_sqlite
 import library
+import llm
 from chat_app import render_ai_chat_interface
 from web_sources import add_or_refresh_source, delete_source, list_sources, validate_url
 
 TIMEOUT_SECONDS = 300
 
-MOCK_USERS = {
-    "admin": ("SecurePass123!", "admin"),
-    "analyst": ("AnalystPass123!", "analyst"),
-}
+DEFAULT_ADMIN_PASSWORD = "SecurePass123!"
+DEFAULT_ANALYST_PASSWORD = "AnalystPass123!"
+
+
+def _read_secrets(keys):
+    """Read values from Streamlit Secrets (Manage app > Settings > Secrets). Safe if none exist."""
+    out = {}
+    try:
+        for key in keys:
+            if key in st.secrets:
+                out[key] = st.secrets[key]
+    except Exception:
+        pass
+    return out
+
+
+def _load_users():
+    """Passwords come from Secrets / environment; the old defaults are only a fallback."""
+    sec = _read_secrets(["ADMIN_PASSWORD", "ANALYST_PASSWORD"])
+    admin_pw = str(sec.get("ADMIN_PASSWORD") or os.environ.get("ADMIN_PASSWORD") or "")
+    analyst_pw = str(sec.get("ANALYST_PASSWORD") or os.environ.get("ANALYST_PASSWORD") or "")
+    using_defaults = not (admin_pw and analyst_pw)
+    return (
+        {
+            "admin": (admin_pw or DEFAULT_ADMIN_PASSWORD, "admin"),
+            "analyst": (analyst_pw or DEFAULT_ANALYST_PASSWORD, "analyst"),
+        },
+        using_defaults,
+    )
+
+
+MOCK_USERS, USING_DEFAULT_PASSWORDS = _load_users()
 
 
 # ----------------------------------------------------------------------------
@@ -85,11 +116,28 @@ def _md_escape(text: str) -> str:
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|<>~])", r"\\\1", text or "")
 
 
+def _make_backup_bytes(db_path):
+    """Consistent copy of the whole database (works while the app is running)."""
+    tmp = tempfile.mktemp(suffix=".db")
+    src = sqlite3.connect(db_path)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    try:
+        with open(tmp, "rb") as fh:
+            return fh.read()
+    finally:
+        os.remove(tmp)
+
+
 def verify_credentials(user: str, pwd: str) -> str | None:
     """Helper method to streamline credential verification."""
     if user in MOCK_USERS:
         expected_pwd, role = MOCK_USERS[user]
-        if pwd == expected_pwd:
+        if hmac.compare_digest(pwd.encode(), expected_pwd.encode()):
             return role
     return None
 
@@ -195,6 +243,11 @@ def render_sidebar_controls(db_path, user_role):
             st.rerun()
 
         if user_role == "admin":
+            if USING_DEFAULT_PASSWORDS:
+                st.warning(
+                    "⚠️ Default passwords are in use. Set ADMIN_PASSWORD and ANALYST_PASSWORD "
+                    "in the app's Secrets."
+                )
             st.markdown("---")
             st.subheader("📁 Government Documents")
             if st.button("📥 Ingest PDFs from Downloads.zip", disabled=job_running("ingest")):
@@ -205,6 +258,20 @@ def render_sidebar_controls(db_path, user_role):
                     st.rerun()
             poll_job("ingest", "Ingesting PDFs")
             show_result("ingest")
+
+            st.markdown("---")
+            st.subheader("💾 Backup DB")
+            st.caption("On Streamlit Cloud, saved data is lost when the app restarts. Download a backup regularly.")
+            if st.button("📦 Prepare backup"):
+                st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
+                log_event(db_path, username, "DB_BACKUP", "")
+            if st.session_state.get("backup_bytes"):
+                st.download_button(
+                    "⬇️ Download backup",
+                    data=st.session_state["backup_bytes"],
+                    file_name=f"database_backup_{time.strftime('%Y%m%d_%H%M')}.db",
+                    mime="application/octet-stream",
+                )
 
             st.markdown("---")
             st.subheader("🔄 Restore DB")
@@ -284,7 +351,7 @@ def _item_image(db_path: str, item_id: int):
     return library.get_item_image(db_path, item_id)
 
 
-def render_library_tab(db_path, user_role, username, ollama_url):
+def render_library_tab(db_path, user_role, username, llm_cfg):
     st.header("🖼️ Image & PDF Library")
     st.caption(
         "Images and PDF pages added here can be found by the chat assistant, which shows "
@@ -292,16 +359,22 @@ def render_library_tab(db_path, user_role, username, ollama_url):
     )
     is_admin = user_role == "admin"
     busy = job_running("lib")
-    vision_model = st.session_state.get("vision_model", "llava")
+    vision_model = st.session_state.get("vision_model") or llm_cfg["vision_model"]
 
     if is_admin:
         with st.expander("🤖 AI description settings"):
-            st.text_input("Vision model", value="llava", key="vision_model")
-            st.caption(
-                "AI descriptions make pictures searchable by what they show (and read scanned PDF pages). "
-                "Install a vision model once in Git Bash, e.g.  ollama pull llava  "
-                "(smaller and faster:  ollama pull moondream)."
-            )
+            st.text_input("Vision model", value=llm_cfg["vision_model"], key="vision_model")
+            if llm_cfg["provider"] == "ollama":
+                st.caption(
+                    "AI descriptions make pictures searchable by what they show (and read scanned PDF pages). "
+                    "Install a vision model once in Git Bash, e.g.  ollama pull llava  "
+                    "(smaller and faster:  ollama pull moondream)."
+                )
+            else:
+                st.caption(
+                    "AI descriptions use your hosted provider. Enter a model that accepts images "
+                    "(or set LLM_VISION_MODEL in Secrets)."
+                )
         with st.form("lib_upload_form", clear_on_submit=True):
             uploads = st.file_uploader(
                 "Add images or PDF files",
@@ -322,7 +395,7 @@ def render_library_tab(db_path, user_role, username, ollama_url):
                 payload = [(f.name, f.getvalue()) for f in uploads]
                 start_job(
                     "lib", library.process_uploads, db_path, payload, desc, username,
-                    auto, vision_model, ollama_url,
+                    auto, llm_cfg, vision_model,
                 )
                 st.rerun()
         poll_job("lib", "Processing files")
@@ -369,8 +442,8 @@ def render_library_tab(db_path, user_role, username, ollama_url):
                         help="Use the vision model to describe / read these items so the chatbot can find them",
                     ):
                         start_job(
-                            "lib", library.describe_items, db_path, pending, vision_model,
-                            ollama_url, username,
+                            "lib", library.describe_items, db_path, pending, llm_cfg,
+                            vision_model, username,
                         )
                         st.rerun()
                 with del_col:
@@ -416,8 +489,7 @@ def main():
 
     render_sidebar_controls(db_path, user_role)
 
-    ollama_url = "http://localhost:11434"
-    model_name = "llama3"
+    llm_cfg = llm.load_config(_read_secrets(llm.SECRET_KEYS))
 
     tab1, tab_web, tab_lib, tab2 = st.tabs(
         [
@@ -428,11 +500,11 @@ def main():
         ]
     )
     with tab1:
-        render_ai_chat_interface(db_path, model_name, ollama_url, user_role, username)
+        render_ai_chat_interface(db_path, llm_cfg, user_role, username)
     with tab_web:
         render_web_sources_tab(db_path, user_role, username)
     with tab_lib:
-        render_library_tab(db_path, user_role, username, ollama_url)
+        render_library_tab(db_path, user_role, username, llm_cfg)
     with tab2:
         st.header("📊 Database Workbench")
         st.info("Run read-only SELECT queries against the database.")

@@ -58,3 +58,20 @@ its title/description clearly matches the question.
 - Needs `pypdfium2` and `Pillow` (in `requirements.txt`) to show PDF pages as pictures.
 - Analysts can ask the chat to show library files but cannot add, edit or delete them.
 - The AI can never read the internal tables (audit log, library, website data) through SQL.
+
+## Deploying on Streamlit Community Cloud
+The cloud server cannot reach Ollama on your own computer, so the chat needs a hosted model.
+
+1. Get an API key (e.g. a free one from Groq: https://console.groq.com/keys).
+2. In Streamlit Cloud open your app: **Manage app > ⋮ > Settings > Secrets** and paste the
+   lines from `secrets_example.toml` (with your real key and passwords). Save; the app restarts.
+3. Never put the key or passwords in GitHub. Secrets stay in Streamlit's settings only.
+
+Supported models (`LLM_PROVIDER`): `ollama` (local, default), `openai` (any OpenAI-compatible API:
+Groq, OpenRouter, Gemini, OpenAI...), `anthropic` (Claude API). Running locally with Ollama needs no secrets.
+
+**Important on Streamlit Cloud**
+- Saved data (websites, library, audit log) is temporary and is lost when the app restarts.
+  Admins: use **💾 Backup DB** in the sidebar regularly and **🔄 Restore DB** after a restart.
+- Set `ADMIN_PASSWORD` / `ANALYST_PASSWORD` in Secrets. Without them the old default passwords
+  are used and the app shows a warning.

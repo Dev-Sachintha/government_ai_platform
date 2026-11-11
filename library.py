@@ -9,14 +9,13 @@ The chat assistant searches this text and shows the matching pictures.
 
 No Streamlit calls here, so everything can run in a background thread.
 """
-import base64
 import hashlib
 import io
 import os
 import re
 import sqlite3
 
-import requests
+import llm
 from PIL import Image, ImageOps
 
 from db_utils import init_db, log_event
@@ -30,7 +29,6 @@ PDF_RENDER_SCALE = 1.4
 MIN_TEXT_CHARS = 20        # a PDF page with less text than this counts as "scanned"
 MAX_AI_ITEMS_PER_RUN = 30
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-VISION_TIMEOUT = 600
 
 
 # ------------------------------------------------------------------ images
@@ -180,19 +178,6 @@ def add_files(db_path: str, uploads: list[tuple[str, bytes]], description: str, 
 
 
 # ------------------------------------------------------------ AI description
-def installed_models(ollama_url: str) -> list[str]:
-    r = requests.get(f"{ollama_url}/api/tags", timeout=5)
-    r.raise_for_status()
-    return [m.get("name", "") for m in r.json().get("models", [])]
-
-
-def model_available(models: list[str], wanted: str) -> bool:
-    wanted = wanted.strip()
-    if ":" in wanted:
-        return wanted in models
-    return any(m.split(":")[0] == wanted for m in models)
-
-
 VISION_PROMPT = (
     "You are indexing an image for a search system. In 2-3 sentences describe what the image shows. "
     "Then write 'Text:' followed by any clearly readable text in the image, copied exactly "
@@ -200,23 +185,18 @@ VISION_PROMPT = (
 )
 
 
-def describe_items(db_path, item_ids, vision_model, ollama_url, username) -> tuple[bool, str]:
-    """Describe images / scanned pages with a local vision model. Never raises."""
+def describe_items(db_path, item_ids, llm_cfg, vision_model, username) -> tuple[bool, str]:
+    """Describe images / scanned pages with a vision model. Never raises."""
     try:
         ids = list(item_ids)[:MAX_AI_ITEMS_PER_RUN]
         if not ids:
             return True, "Nothing needs an AI description."
-        try:
-            models = installed_models(ollama_url)
-        except requests.exceptions.RequestException:
-            return False, f"Cannot connect to Ollama at {ollama_url}. Make sure Ollama is running."
-        if not model_available(models, vision_model):
-            return False, (
-                f"The vision model '{vision_model}' is not installed. "
-                f"In Git Bash run:  ollama pull {vision_model}"
-            )
+        ready, problem = llm.vision_ready(llm_cfg, vision_model)
+        if not ready:
+            return False, problem
 
         done = failed = 0
+        last_error = ""
         for item_id in ids:
             data = get_item_image(db_path, item_id)
             if not data:
@@ -225,21 +205,7 @@ def describe_items(db_path, item_ids, vision_model, ollama_url, username) -> tup
             try:
                 with Image.open(io.BytesIO(data)) as img:
                     small = _to_jpeg(img, max_side=VISION_SIDE, quality=80)
-                resp = requests.post(
-                    f"{ollama_url}/api/generate",
-                    json={
-                        "model": vision_model,
-                        "prompt": VISION_PROMPT,
-                        "images": [base64.b64encode(small).decode()],
-                        "stream": False,
-                        "options": {"temperature": 0.2, "repeat_penalty": 1.15, "num_predict": 400},
-                    },
-                    timeout=VISION_TIMEOUT,
-                )
-                if resp.status_code != 200:
-                    failed += 1
-                    continue
-                text = _clean(resp.json().get("response", ""))[:2500]
+                text = _clean(llm.describe_image(llm_cfg, small, VISION_PROMPT, vision_model))[:2500]
                 if not text:
                     failed += 1
                     continue
@@ -250,20 +216,23 @@ def describe_items(db_path, item_ids, vision_model, ollama_url, username) -> tup
                 finally:
                     conn.close()
                 done += 1
-            except requests.exceptions.RequestException:
+            except llm.LLMError as e:
                 failed += 1
+                last_error = str(e)
+                if "rejected the API key" in last_error or "Cannot " in last_error or "rate limit" in last_error:
+                    break  # no point trying the remaining items
         log_event(db_path, username, "LIBRARY_AI_DESCRIBE", f"{done} ok, {failed} failed")
         if done == 0:
-            return False, "The AI could not describe the selected item(s). Try a different vision model."
+            return False, last_error or "The AI could not describe the selected item(s). Try a different vision model."
         msg = f"AI described {done} item(s)."
         if failed:
-            msg += f" {failed} could not be described."
+            msg += f" {failed} could not be described" + (f" ({last_error})" if last_error else "") + "."
         return True, msg
     except Exception as e:
         return False, f"AI description failed: {e}"
 
 
-def process_uploads(db_path, uploads, description, username, auto_describe, vision_model, ollama_url):
+def process_uploads(db_path, uploads, description, username, auto_describe, llm_cfg, vision_model):
     """Background job: store files, optionally describe them. Returns (ok, message)."""
     try:
         new_ids, messages = add_files(db_path, uploads, description, username)
@@ -272,7 +241,7 @@ def process_uploads(db_path, uploads, description, username, auto_describe, visi
         if auto_describe and new_ids:
             pending = pending_description_ids(db_path, None, ids=new_ids)
             if pending:
-                _, ai_msg = describe_items(db_path, pending, vision_model, ollama_url, username)
+                _, ai_msg = describe_items(db_path, pending, llm_cfg, vision_model, username)
                 lines.append("🤖 " + ai_msg)
         return ok_any, "\n\n".join(lines)
     except Exception as e:

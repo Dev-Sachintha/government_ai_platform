@@ -6,10 +6,10 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
-import requests
 import streamlit as st
 
 import library
+import llm
 from db_utils import is_safe_select, log_event
 
 STOP_WORDS = {
@@ -36,7 +36,6 @@ INTERNAL_TABLES = ("audit_logs", "library_items", "library_files", "web_pages", 
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
 
 MAX_IMAGES = 3
-OLLAMA_TIMEOUT = 600  # seconds; local models can be slow, especially the first request
 
 
 @st.cache_resource
@@ -196,9 +195,7 @@ def _image_caption(h: dict) -> str:
 
 
 # --------------------------------------------------------------- the model
-def _generate_answer(
-    db_path: str, model_name: str, ollama_url: str, username: str, prompt: str
-) -> dict:
+def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) -> dict:
     """Runs in a BACKGROUND THREAD. Must not call any st.* function."""
     try:
         db_schema = _get_schema(db_path)
@@ -241,40 +238,31 @@ def _generate_answer(
             {"snippets": 3, "chars": 600, "repeat_penalty": 1.15, "temperature": 0.2},
             {"snippets": 1, "chars": 250, "repeat_penalty": 1.3, "temperature": 0.6},
         ]
-        response = None
-        for cfg in attempts:
+        raw_text = ""
+        for i, cfg in enumerate(attempts):
             doc_context = _search_documents(
                 db_path, keywords, cfg["snippets"], cfg["chars"], library_items, shown_ids
             )
-            response = requests.post(
-                f"{ollama_url}/api/generate",
-                json={
-                    "model": model_name,
-                    "prompt": build_prompt(doc_context),
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": cfg["temperature"],
-                        "repeat_penalty": cfg["repeat_penalty"],
-                        "num_ctx": 4096,
-                        "num_predict": 1024,
-                    },
-                },
-                timeout=OLLAMA_TIMEOUT,
-            )
-            looped = response.status_code == 500 and "repeat" in response.text.lower()
-            if not looped:
-                break
-
-        if response.status_code != 200:
-            if "repeat" in response.text.lower():
-                raise RuntimeError(
-                    "The model got stuck repeating itself. Try rephrasing with a "
-                    "shorter question (a few keywords works best)."
+            try:
+                raw_text = llm.generate(
+                    llm_cfg,
+                    build_prompt(doc_context),
+                    json_mode=True,
+                    temperature=cfg["temperature"],
+                    repeat_penalty=cfg["repeat_penalty"],
+                    max_tokens=1024,
                 )
-            raise RuntimeError(f"Ollama error {response.status_code}: {response.text}")
+                break
+            except llm.LLMError as e:
+                if e.looped and i < len(attempts) - 1:
+                    continue  # local model looped: retry with less context
+                if e.looped:
+                    raise llm.LLMError(
+                        "The model got stuck repeating itself. Try rephrasing with a "
+                        "shorter question (a few keywords works best)."
+                    )
+                raise
 
-        raw_text = response.json().get("response", "")
         match = re.search(r"\{.*\}", raw_text, re.DOTALL)
         try:
             ai_data = json.loads(match.group(0) if match else raw_text)
@@ -314,10 +302,8 @@ def _generate_answer(
             "error": None,
         }
 
-    except requests.exceptions.ConnectionError:
-        return {"error": f"Cannot connect to Ollama at {ollama_url}. Make sure Ollama is running."}
-    except requests.exceptions.Timeout:
-        return {"error": "Ollama took too long to respond. Try a shorter question or a smaller model."}
+    except llm.LLMError as e:
+        return {"error": str(e)}
     except Exception as e:
         return {"error": f"Error processing query: {e}"}
 
@@ -333,9 +319,7 @@ def _render_message(message: dict):
         st.image(img["bytes"], caption=img["caption"], width=520)
 
 
-def render_ai_chat_interface(
-    db_path: str, model_name: str, ollama_url: str, user_role: str, username: str
-):
+def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, username: str):
     """Chat assistant. The model call runs in a background thread so the 1-second
     auto-refresh (session timer) cannot interrupt it."""
     st.header("💬 Government Service & Database Chat Assistant")
@@ -343,6 +327,10 @@ def render_ai_chat_interface(
         "Ask questions about government service minutes, officer recruitment, or database records. "
         "Ask to *show* something to get matching images from the library."
     )
+    st.caption(f"🤖 {llm.describe_config(llm_cfg)}")
+    problem = llm.config_problem(llm_cfg)
+    if problem:
+        st.error(problem)
 
     if "chat_messages" not in st.session_state:
         st.session_state["chat_messages"] = [
@@ -395,7 +383,7 @@ def render_ai_chat_interface(
     ):
         st.session_state["chat_messages"].append({"role": "user", "content": prompt})
         future = _get_executor().submit(
-            _generate_answer, db_path, model_name, ollama_url, username, prompt
+            _generate_answer, db_path, llm_cfg, username, prompt
         )
         st.session_state["chat_job"] = {"future": future, "started": time.time()}
         st.session_state["last_active"] = time.time()
