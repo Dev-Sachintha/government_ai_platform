@@ -1,0 +1,464 @@
+import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+import pandas as pd
+import sqlite3
+import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh
+
+from db_utils import init_db, is_safe_select, log_event
+from validation_utils import validate_and_restore_sqlite
+import library
+from chat_app import render_ai_chat_interface
+from web_sources import add_or_refresh_source, delete_source, list_sources, validate_url
+
+TIMEOUT_SECONDS = 300
+
+MOCK_USERS = {
+    "admin": ("SecurePass123!", "admin"),
+    "analyst": ("AnalystPass123!", "analyst"),
+}
+
+
+# ----------------------------------------------------------------------------
+# Background jobs. The page auto-refreshes every second (session timer), which
+# would interrupt any long action run directly in the script. Long actions run
+# in a worker thread instead and are polled on each refresh.
+# ----------------------------------------------------------------------------
+@st.cache_resource
+def _bg_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=2)
+
+
+def start_job(name, fn, *args):
+    st.session_state.pop(f"result:{name}", None)
+    st.session_state[f"job:{name}"] = {
+        "future": _bg_executor().submit(fn, *args),
+        "started": time.time(),
+    }
+    st.session_state["last_active"] = time.time()
+
+
+def job_running(name) -> bool:
+    return st.session_state.get(f"job:{name}") is not None
+
+
+def poll_job(name, label):
+    """Show progress; when the job finishes, store its (ok, message) result."""
+    job = st.session_state.get(f"job:{name}")
+    if job is None:
+        return
+    if job["future"].done():
+        try:
+            ok, msg = job["future"].result()
+        except Exception as e:
+            ok, msg = False, f"{label} failed: {e}"
+        st.session_state[f"result:{name}"] = (ok, msg)
+        st.session_state[f"job:{name}"] = None
+        st.session_state["last_active"] = time.time()
+        st.rerun()
+    else:
+        st.info(f"⏳ {label}... {int(time.time() - job['started'])}s")
+
+
+def show_result(name):
+    result = st.session_state.get(f"result:{name}")
+    if result:
+        (st.success if result[0] else st.error)(result[1])
+
+
+def _run_ingest(db_path, username):
+    try:
+        from pdf_ingest import ingest_zip_pdfs_to_sqlite
+
+        ingest_zip_pdfs_to_sqlite("Downloads.zip", db_path)
+        init_db(db_path)
+        log_event(db_path, username, "PDF_INGEST", "Downloads.zip")
+        return True, "PDF documents successfully indexed in SQLite!"
+    except Exception as e:
+        return False, f"PDF ingest failed: {e}"
+
+
+def _md_escape(text: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!|<>~])", r"\\\1", text or "")
+
+
+def verify_credentials(user: str, pwd: str) -> str | None:
+    """Helper method to streamline credential verification."""
+    if user in MOCK_USERS:
+        expected_pwd, role = MOCK_USERS[user]
+        if pwd == expected_pwd:
+            return role
+    return None
+
+
+def check_session_timeout():
+    if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
+        return False
+    current_time = time.time()
+    last_active = st.session_state.get("last_active", current_time)
+
+    # NOTE: do not refresh last_active here. This runs on every auto-refresh tick,
+    # which would stop the inactivity timer from ever counting down. last_active is
+    # updated only by real user activity (client tracker, chat, Extend Session).
+    if current_time - last_active > TIMEOUT_SECONDS:
+        st.session_state["authenticated"] = False
+        st.session_state["auth_timeout_expired"] = True
+        st.rerun()
+    return True
+
+
+def client_activity_tracker():
+    tracker_js = """
+    <script>
+    (function() {
+        let lastSent = Date.now();
+        const throttleInterval = 15000;
+        function notifyActivity(e) {
+            const now = Date.now();
+            if (now - lastSent > throttleInterval) {
+                lastSent = now;
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('user_active_ts', now);
+                window.parent.history.replaceState({}, '', url);
+            }
+        }
+        window.parent.document.addEventListener('mousemove', notifyActivity);
+        window.parent.document.addEventListener('click', notifyActivity);
+        window.parent.document.addEventListener('keydown', notifyActivity);
+    })();
+    </script>
+    """
+    components.html(tracker_js, height=0, width=0)
+
+    if client_ts := st.query_params.get("user_active_ts"):
+        last_recorded = st.session_state.get("client_last_active_ts", 0)
+        if client_ts != last_recorded:
+            st.session_state["client_last_active_ts"] = client_ts
+            st.session_state["last_active"] = time.time()
+
+
+def check_password():
+    if st.session_state.get("auth_timeout_expired", False):
+        st.warning("⚠️ Your session expired due to inactivity. Please log in again.")
+        st.session_state["auth_timeout_expired"] = False
+
+    def password_entered():
+        user = st.session_state.get("login_username", "").strip()
+        pwd = st.session_state.get("login_password", "")
+        role = verify_credentials(user, pwd)
+        if role:
+            st.session_state["authenticated"] = True
+            st.session_state["current_user"] = user
+            st.session_state["role"] = role
+            st.session_state["last_active"] = time.time()
+            st.session_state["auth_error"] = False
+            log_event("database.db", user, "LOGIN", f"role={role}")
+        else:
+            st.session_state["authenticated"] = False
+            st.session_state["auth_error"] = True
+            log_event("database.db", user or "?", "LOGIN_FAILED", "")
+
+    if st.session_state.get("authenticated", False):
+        return check_session_timeout()
+
+    st.markdown(
+        "<h1 style='text-align: center;'>🔐 Government AI Reporting Platform</h1>",
+        unsafe_allow_html=True,
+    )
+    col1, col2, col3 = st.columns([1, 1.5, 1])
+    with col2:
+        with st.form("login_form"):
+            st.text_input("Username", key="login_username")
+            st.text_input("Password", type="password", key="login_password")
+            st.form_submit_button("Login", on_click=password_entered, type="primary")
+            if st.session_state.get("auth_error", False):
+                st.error("😕 Invalid username or password.")
+    return False
+
+
+def render_sidebar_controls(db_path, user_role):
+    """Extracted method for sidebar controls with clean string formatting and control flow."""
+    with st.sidebar:
+        st.header("⚙️ Session & Navigation")
+        username = st.session_state.get("current_user", "User")
+        st.success(f"User: **{username}**\nRole: **{user_role.upper()}**")
+
+        elapsed = time.time() - st.session_state.get("last_active", time.time())
+        remaining = max(0, int(TIMEOUT_SECONDS - elapsed))
+        m, s = divmod(remaining, 60)
+        st.info(f"⏱️ Session Timeout in: {m:02d}:{s:02d}")
+        if st.button("🔄 Extend Session"):
+            st.session_state["last_active"] = time.time()
+            st.rerun()
+
+        if user_role == "admin":
+            st.markdown("---")
+            st.subheader("📁 Government Documents")
+            if st.button("📥 Ingest PDFs from Downloads.zip", disabled=job_running("ingest")):
+                if not os.path.exists("Downloads.zip"):
+                    st.error("Downloads.zip not found in the app folder.")
+                else:
+                    start_job("ingest", _run_ingest, db_path, username)
+                    st.rerun()
+            poll_job("ingest", "Ingesting PDFs")
+            show_result("ingest")
+
+            st.markdown("---")
+            st.subheader("🔄 Restore DB")
+            up_file = st.file_uploader("Upload Backup", type=["zip", "db"])
+            if up_file is not None and st.button("🛡️ Validate & Restore"):
+                success, msg = validate_and_restore_sqlite(up_file, db_path)
+                if success:
+                    log_event(db_path, username, "DB_RESTORE", up_file.name)
+                    st.success(msg)
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+        if st.button("🚪 Logout"):
+            log_event(db_path, username, "LOGOUT", "")
+            st.session_state["authenticated"] = False
+            st.rerun()
+
+
+def render_web_sources_tab(db_path, user_role, username):
+    st.header("🌐 Website Sources")
+    st.caption(
+        "The AI assistant reads the websites listed here when it answers questions in the chat tab."
+    )
+    is_admin = user_role == "admin"
+    busy = job_running("web")
+
+    if is_admin:
+        with st.form("add_web_form", clear_on_submit=True):
+            new_url = st.text_input(
+                "Website link", placeholder="https://www.example.gov.lk/services"
+            )
+            submitted = st.form_submit_button("➕ Add & Fetch", disabled=busy)
+        if submitted:
+            ok, result = validate_url(new_url)
+            if not ok:
+                st.error(result)
+            else:
+                start_job("web", add_or_refresh_source, db_path, result, username)
+                st.rerun()
+        poll_job("web", "Fetching website")
+        show_result("web")
+    else:
+        st.info("Only admins can add or remove website links. You can ask the chat about them.")
+
+    sources = list_sources(db_path)
+    st.subheader(f"Added websites ({len(sources)})")
+    if not sources:
+        st.info("No websites added yet.")
+    for src in sources:
+        with st.container(border=True):
+            if is_admin:
+                info_col, refresh_col, remove_col = st.columns([6, 1, 1])
+            else:
+                info_col, refresh_col, remove_col = st.container(), None, None
+            with info_col:
+                st.markdown(f"**{_md_escape(src['title'] or src['url'])}**")
+                st.text(src["url"])
+                st.caption(
+                    f"{src['chunk_count']} sections · last fetched {src['last_fetched']} UTC · "
+                    f"added by {src['added_by']}"
+                )
+            if is_admin:
+                with refresh_col:
+                    if st.button("🔄", key=f"web_refresh_{src['id']}", help="Fetch this page again", disabled=busy):
+                        start_job("web", add_or_refresh_source, db_path, src["url"], username)
+                        st.rerun()
+                with remove_col:
+                    if st.button("🗑️", key=f"web_del_{src['id']}", help="Remove this website", disabled=busy):
+                        delete_source(db_path, src["id"], username)
+                        st.rerun()
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def _item_image(db_path: str, item_id: int):
+    return library.get_item_image(db_path, item_id)
+
+
+def render_library_tab(db_path, user_role, username, ollama_url):
+    st.header("🖼️ Image & PDF Library")
+    st.caption(
+        "Images and PDF pages added here can be found by the chat assistant, which shows "
+        "the matching pictures. Try asking: “show me the passport application form”."
+    )
+    is_admin = user_role == "admin"
+    busy = job_running("lib")
+    vision_model = st.session_state.get("vision_model", "llava")
+
+    if is_admin:
+        with st.expander("🤖 AI description settings"):
+            st.text_input("Vision model", value="llava", key="vision_model")
+            st.caption(
+                "AI descriptions make pictures searchable by what they show (and read scanned PDF pages). "
+                "Install a vision model once in Git Bash, e.g.  ollama pull llava  "
+                "(smaller and faster:  ollama pull moondream)."
+            )
+        with st.form("lib_upload_form", clear_on_submit=True):
+            uploads = st.file_uploader(
+                "Add images or PDF files",
+                type=["png", "jpg", "jpeg", "webp", "gif", "pdf"],
+                accept_multiple_files=True,
+            )
+            desc = st.text_area(
+                "Description / keywords (optional, applied to every file in this upload)",
+                placeholder="e.g. passport application form, Department of Immigration",
+                height=80,
+            )
+            auto = st.checkbox("Describe images with AI after upload (slower, needs a vision model)")
+            submitted = st.form_submit_button("⬆️ Upload", disabled=busy)
+        if submitted:
+            if not uploads:
+                st.error("Please choose at least one file.")
+            else:
+                payload = [(f.name, f.getvalue()) for f in uploads]
+                start_job(
+                    "lib", library.process_uploads, db_path, payload, desc, username,
+                    auto, vision_model, ollama_url,
+                )
+                st.rerun()
+        poll_job("lib", "Processing files")
+        show_result("lib")
+    else:
+        st.info("Only admins can add or remove files. You can ask the chat to show them.")
+
+    files = library.list_files(db_path)
+    st.subheader(f"Library ({len(files)} files)")
+    if not files:
+        st.info("No files added yet.")
+
+    for f in files:
+        fid = f["id"]
+        with st.container(border=True):
+            if is_admin:
+                info_col, ai_col, del_col = st.columns([6, 2, 1])
+            else:
+                info_col, ai_col, del_col = st.container(), None, None
+
+            with info_col:
+                st.markdown(f"**{_md_escape(f['title'])}**")
+                if f["kind"] == "pdf":
+                    scanned = f["items"] - f["text_pages"]
+                    st.caption(
+                        f"PDF · {f['items']} pages · {f['text_pages']} with text · "
+                        f"{f['ai_pages']} read by AI · added by {f['added_by']}"
+                    )
+                    if scanned > f["ai_pages"]:
+                        st.caption("⚠️ Some scanned pages have no searchable text yet. Use the 🤖 button.")
+                else:
+                    st.caption(
+                        f"Image · {'AI described' if f['ai_pages'] else 'no AI description'} · "
+                        f"added by {f['added_by']}"
+                    )
+                if f["description"]:
+                    st.text(f["description"])
+
+            if is_admin:
+                pending = library.pending_description_ids(db_path, fid)
+                with ai_col:
+                    if pending and st.button(
+                        f"🤖 Describe ({len(pending)})", key=f"lib_ai_{fid}", disabled=busy,
+                        help="Use the vision model to describe / read these items so the chatbot can find them",
+                    ):
+                        start_job(
+                            "lib", library.describe_items, db_path, pending, vision_model,
+                            ollama_url, username,
+                        )
+                        st.rerun()
+                with del_col:
+                    if st.button("🗑️", key=f"lib_del_{fid}", help="Remove this file", disabled=busy):
+                        library.delete_file(db_path, fid, username)
+                        _item_image.clear()
+                        st.rerun()
+
+            if st.checkbox("👁️ Preview", key=f"lib_prev_{fid}"):
+                page = 1
+                if f["items"] > 1:
+                    page = st.number_input("Page", 1, f["items"], 1, key=f"lib_page_{fid}")
+                item_id = library.get_item_id(db_path, fid, int(page))
+                data = _item_image(db_path, item_id) if item_id else None
+                if data:
+                    st.image(data, width=480)
+                else:
+                    st.info("No picture available (PDF page pictures need the pypdfium2 package).")
+
+            if is_admin:
+                with st.expander("✏️ Edit title / description"):
+                    new_title = st.text_input("Title", value=f["title"], key=f"lib_title_{fid}")
+                    new_desc = st.text_area(
+                        "Description / keywords (the chatbot searches this)",
+                        value=f["description"], key=f"lib_desc_{fid}",
+                    )
+                    if st.button("💾 Save", key=f"lib_save_{fid}"):
+                        library.update_file(db_path, fid, new_title, new_desc, username)
+                        st.rerun()
+
+
+def main():
+    if not check_password():
+        return
+
+    st_autorefresh(interval=1000, limit=None, key="timeout_ticker")
+    client_activity_tracker()
+
+    db_path = "database.db"
+    init_db(db_path)
+    user_role = st.session_state.get("role", "analyst")
+    username = st.session_state.get("current_user", "User")
+
+    render_sidebar_controls(db_path, user_role)
+
+    ollama_url = "http://localhost:11434"
+    model_name = "llama3"
+
+    tab1, tab_web, tab_lib, tab2 = st.tabs(
+        [
+            "💬 Government AI Chat Assistant",
+            "🌐 Website Sources",
+            "🖼️ Image & PDF Library",
+            "📊 Database Workbench",
+        ]
+    )
+    with tab1:
+        render_ai_chat_interface(db_path, model_name, ollama_url, user_role, username)
+    with tab_web:
+        render_web_sources_tab(db_path, user_role, username)
+    with tab_lib:
+        render_library_tab(db_path, user_role, username, ollama_url)
+    with tab2:
+        st.header("📊 Database Workbench")
+        st.info("Run read-only SELECT queries against the database.")
+        if user_role != "admin":
+            st.warning("The Database Workbench is available to admins only.")
+        else:
+            sql = st.text_area(
+                "SQL query",
+                value="SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;",
+                height=120,
+            )
+            if st.button("▶️ Run Query"):
+                if not is_safe_select(sql):
+                    st.error("Only a single read-only SELECT statement is allowed.")
+                else:
+                    try:
+                        conn = sqlite3.connect(db_path)
+                        try:
+                            result_df = pd.read_sql_query(sql, conn)
+                        finally:
+                            conn.close()
+                        log_event(db_path, username, "WORKBENCH_QUERY", sql[:500])
+                        st.dataframe(result_df, width="stretch")
+                    except Exception as e:
+                        st.error(f"Query failed: {e}")
+
+
+if __name__ == "__main__":
+    main()
