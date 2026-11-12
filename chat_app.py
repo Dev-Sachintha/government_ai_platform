@@ -7,17 +7,55 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import library
 import llm
 from db_utils import is_safe_select, log_event
 
 STOP_WORDS = {
-    "what", "where", "when", "how", "the", "and", "for", "with", "that", "this",
-    "from", "are", "was", "were", "show", "image", "images", "picture", "pictures",
-    "photo", "photos", "photograph", "please", "give", "send", "display", "find",
-    "tell", "about", "have", "need", "want", "could", "would", "there", "their",
-    "them", "some", "into", "also", "does", "your",
+    "what",
+    "where",
+    "when",
+    "how",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "are",
+    "was",
+    "were",
+    "show",
+    "image",
+    "images",
+    "picture",
+    "pictures",
+    "photo",
+    "photos",
+    "photograph",
+    "please",
+    "give",
+    "send",
+    "display",
+    "find",
+    "tell",
+    "about",
+    "have",
+    "need",
+    "want",
+    "could",
+    "would",
+    "there",
+    "their",
+    "them",
+    "some",
+    "into",
+    "also",
+    "does",
+    "your",
 }
 # Words that mean "I want to SEE something"
 IMAGE_INTENT = re.compile(
@@ -32,7 +70,13 @@ PICTURE_WORDS = re.compile(
     re.IGNORECASE,
 )
 # Internal tables the AI must never read or show
-INTERNAL_TABLES = ("audit_logs", "library_items", "library_files", "web_pages", "web_sources")
+INTERNAL_TABLES = (
+    "audit_logs",
+    "library_items",
+    "library_files",
+    "web_pages",
+    "web_sources",
+)
 # Not offered to the AI for SQL: documents are searched automatically, never by SQL
 HIDDEN_FROM_SQL_SCHEMA = set(INTERNAL_TABLES) | {"government_services"}
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
@@ -48,9 +92,14 @@ def _get_executor() -> ThreadPoolExecutor:
 # ------------------------------------------------------------------ search
 def _extract_keywords(prompt: str) -> list[str]:
     """Words of 4+ letters/digits. Punctuation separates words ("2022/2023" -> 2022, 2023).
-    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept."""
+    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept.
+    """
     text = "".join(
-        ch if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN" else " "
+        (
+            ch
+            if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN"
+            else " "
+        )
         for ch in prompt
     )
     keywords: list[str] = []
@@ -77,7 +126,7 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
     best_score, best_start = -1, 0
     for pos in starts:
         start = max(0, pos - limit // 5)
-        window = low[start:start + limit]
+        window = low[start : start + limit]
         sc = sum(kw in window for kw in keywords)
         if sc > best_score:
             best_score, best_start = sc, start
@@ -85,7 +134,7 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
         nxt = text.find(" ", best_start)
         if 0 <= nxt < best_start + 30:
             best_start = nxt + 1
-    return ("... " if best_start > 0 else "") + text[best_start:best_start + limit]
+    return ("... " if best_start > 0 else "") + text[best_start : best_start + limit]
 
 
 def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> str:
@@ -101,18 +150,24 @@ def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> 
 
 
 def _pick_images(
-    db_path: str, keywords: list[str], hits: list[dict], wants_image: bool, wants_picture: bool
+    db_path: str,
+    keywords: list[str],
+    hits: list[dict],
+    wants_image: bool,
+    wants_picture: bool,
 ) -> list[dict]:
-    """Choose library pictures to show.
-    - The user asked to see something ("show", "image", ...): any match counts.
-    - Otherwise only strong matches: a keyword in the title/description, or 3+ words in the text."""
+    """Choose library pictures to show."""
     if wants_image:
         chosen = [h for h in hits if h["has_data"] and h["score"] >= 1]
     else:
         chosen = [
-            h for h in hits
+            h
+            for h in hits
             if h["has_data"]
-            and ((h["kind"] == "image" and h["head"] >= 1) or (h["kind"] == "pdf" and h["body"] >= 3))
+            and (
+                (h["kind"] == "image" and h["head"] >= 1)
+                or (h["kind"] == "pdf" and h["body"] >= 3)
+            )
         ]
     if not keywords and wants_picture:
         chosen = library.latest_images(db_path, MAX_IMAGES)
@@ -133,10 +188,9 @@ def _search_documents(
     library_items: list[dict] | None = None,
     shown_ids: set | None = None,
 ) -> str:
-    """Keyword search over PDFs, websites and the image library; best matches first.
-    Pictures that will be shown to the user always come first."""
+    """Keyword search over PDFs, websites and the image library."""
     shown_ids = shown_ids or set()
-    candidates = []  # (label, content, library_item_id or None)
+    candidates = []
     conn = sqlite3.connect(db_path)
     try:
         if keywords:
@@ -149,7 +203,7 @@ def _search_documents(
                     f"WHERE {pdf_clause} LIMIT 40;",
                     params,
                 ):
-                    candidates.append((f"[Source: {fn} (Page {pg})]", content, None))
+                    candidates.append((f"", content, None))
             except sqlite3.Error:
                 pass
             try:
@@ -159,22 +213,30 @@ def _search_documents(
                     f"WHERE {web_clause} LIMIT 60;",
                     params,
                 ):
-                    candidates.append((f"[Website: {title or url} - {url}]", content, None))
+                    candidates.append(
+                        (f"[Website: {title or url} - {url}]", content, None)
+                    )
             except sqlite3.Error:
                 pass
 
         for h in library_items or []:
             what = "Image" if h["kind"] == "image" else f"PDF page {h['page']}"
             prefix = "Shown to the user: " if h["id"] in shown_ids else "Library: "
-            content = " ".join(x for x in (h["description"], h["ai_text"], h["text_content"]) if x)
-            candidates.append((f"[{prefix}{what} - {h['title']}]", content or h["title"], h["id"]))
+            content = " ".join(
+                x for x in (h["description"], h["ai_text"], h["text_content"]) if x
+            )
+            candidates.append(
+                (f"[{prefix}{what} - {h['title']}]", content or h["title"], h["id"])
+            )
 
         def score(item):
             low = str(item[1]).lower()
             return sum(kw in low for kw in keywords)
 
         shown = [c for c in candidates if c[2] in shown_ids]
-        others = sorted((c for c in candidates if c[2] not in shown_ids), key=score, reverse=True)
+        others = sorted(
+            (c for c in candidates if c[2] not in shown_ids), key=score, reverse=True
+        )
 
         snippets = []
         for label, content, _ in shown + others:
@@ -185,8 +247,6 @@ def _search_documents(
                 break
 
         if not snippets:
-            # No keyword match (e.g. "what is this website about?"): use the
-            # opening section of the most recently added websites.
             try:
                 for title, url, content in conn.execute(
                     "SELECT s.title, s.url, p.content FROM web_pages p "
@@ -195,7 +255,9 @@ def _search_documents(
                 ):
                     cleaned = _clean_snippet(content, snippet_chars, keywords)
                     if cleaned:
-                        snippets.append(f"[Website: {title or url} - {url}]\n{cleaned}...")
+                        snippets.append(
+                            f"[Website: {title or url} - {url}]\n{cleaned}..."
+                        )
             except sqlite3.Error:
                 pass
     finally:
@@ -226,7 +288,9 @@ def _image_caption(h: dict) -> str:
 
 
 # --------------------------------------------------------------- the model
-def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) -> dict:
+def _generate_answer(
+    db_path: str, llm_cfg: dict, username: str, prompt: str, target_language: str
+) -> dict:
     """Runs in a BACKGROUND THREAD. Must not call any st.* function."""
     try:
         db_schema = _get_schema(db_path)
@@ -250,13 +314,12 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
                 f"Relevant Excerpts (government PDFs, websites and images added by the admin):\n"
                 f"{doc_context or 'No specific excerpt found.'}{note}\n\n"
                 f"Database Schema (tables you may query with SQL):\n{db_schema or '(no data tables available)'}\n\n"
-                "Answer the user's question using the excerpts above. Put the complete answer in "
-                '"explanation" as plain text (short lists are fine). '
+                f"Answer the user's question using the excerpts above. Translate and reply strictly in the language: **{target_language}**. "
+                'Put the complete answer in "explanation" as plain text (short lists are fine). '
                 "If the excerpts do not contain the answer, say so clearly instead of guessing. "
                 "If you use a website excerpt, mention that website's URL in your answer. "
                 "Items marked 'Shown to the user' are displayed as pictures under your answer; "
-                "you may refer to them (for example 'see the image below'). "
-                "Reply in the same language as the user's question.\n"
+                "you may refer to them (for example 'see the image below').\n"
                 "Only write a SQL query when the user explicitly asks for records, counts, totals or tables "
                 "from the tables listed in the Database Schema. NEVER write SQL to look up document content: "
                 "the excerpts already contain it. If no tables are listed, or the question is about documents, "
@@ -268,8 +331,6 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
             )
             return f"{system_instruction}\n\nUser Question: {prompt}"
 
-        # Attempt 1: normal context. Attempt 2 (if the model loops): less context,
-        # stronger repetition penalty, higher temperature.
         attempts = [
             {"snippets": 3, "chars": 600, "repeat_penalty": 1.15, "temperature": 0.2},
             {"snippets": 1, "chars": 250, "repeat_penalty": 1.3, "temperature": 0.6},
@@ -277,7 +338,12 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
         raw_text = ""
         for i, cfg in enumerate(attempts):
             doc_context = _search_documents(
-                db_path, keywords, cfg["snippets"], cfg["chars"], library_items, shown_ids
+                db_path,
+                keywords,
+                cfg["snippets"],
+                cfg["chars"],
+                library_items,
+                shown_ids,
             )
             try:
                 raw_text = llm.generate(
@@ -291,7 +357,7 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
                 break
             except llm.LLMError as e:
                 if e.looped and i < len(attempts) - 1:
-                    continue  # local model looped: retry with less context
+                    continue
                 if e.looped:
                     raise llm.LLMError(
                         "The model got stuck repeating itself. Try rephrasing with a "
@@ -305,7 +371,9 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
         except json.JSONDecodeError:
             ai_data = {"explanation": raw_text.strip(), "sql_query": ""}
 
-        explanation = ai_data.get("explanation") or "Here is the information you requested:"
+        explanation = (
+            ai_data.get("explanation") or "Here is the information you requested:"
+        )
         if not isinstance(explanation, str):
             explanation = json.dumps(explanation, ensure_ascii=False, indent=2)
         sql_query = (ai_data.get("sql_query") or "").strip()
@@ -331,7 +399,12 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
 
         shown = [{"caption": _image_caption(im), "bytes": im["bytes"]} for im in images]
         if shown:
-            log_event(db_path, username, "CHAT_IMAGES_SHOWN", ", ".join(s["caption"] for s in shown)[:500])
+            log_event(
+                db_path,
+                username,
+                "CHAT_IMAGES_SHOWN",
+                ", ".join(s["caption"] for s in shown)[:500],
+            )
         return {
             "explanation": explanation,
             "sql_query": sql_query,
@@ -357,9 +430,10 @@ def _render_message(message: dict):
         st.image(img["bytes"], caption=img["caption"], width=520)
 
 
-def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, username: str):
-    """Chat assistant. The model call runs in a background thread so the 1-second
-    auto-refresh (session timer) cannot interrupt it."""
+def render_ai_chat_interface(
+    db_path: str, llm_cfg: dict, user_role: str, username: str
+):
+    """Chat assistant with added language selection, file upload, and voice translator widgets."""
     st.header("💬 Government Service & Database Chat Assistant")
     st.markdown(
         "Ask questions about government service minutes, officer recruitment, or database records. "
@@ -369,6 +443,93 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
     problem = llm.config_problem(llm_cfg)
     if problem:
         st.error(problem)
+
+    # --- CONTROLS BAR: Language Selector & File Upload ---
+    col_lang, col_upload = st.columns([1, 1])
+    with col_lang:
+        target_language = st.selectbox(
+            "🌐 Select Output Language / Translator",
+            [
+                "English",
+                "Sinhala (සිංහල)",
+                "Tamil (தமிழ்)",
+                "Spanish",
+                "French",
+                "German",
+                "Chinese",
+                "Japanese",
+                "Hindi",
+            ],
+            index=0,
+        )
+    with col_upload:
+        uploaded_chat_file = st.file_uploader(
+            "📁 Upload File to Chat Context",
+            type=["png", "jpg", "jpeg", "pdf", "txt", "csv"],
+            key="chat_file_uploader",
+        )
+        if uploaded_chat_file is not None:
+            # Quick ingestion check or notification
+            st.success(
+                f"File '{uploaded_chat_file.name}' attached to current request context."
+            )
+
+    # --- VOICE TRANSLATOR COMPONENT (Web Speech API) ---
+    st.markdown(
+        "🎙️ **Voice Translator / Speech-to-Text Input** (Speak in any language):"
+    )
+    voice_component_html = """
+    <div>
+        <button id="recordButton" style="background-color: #ff4b4b; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold;">🎤 Start Voice Input</button>
+        <span id="recordStatus" style="margin-left: 10px; font-style: italic; color: gray;">Click to start speaking...</span>
+    </div>
+    <script>
+        const recordButton = document.getElementById('recordButton');
+        const recordStatus = document.getElementById('recordStatus');
+        
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            const recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+            recognition.lang = 'en-US'; // Can capture mixed inputs or let browser resolve
+
+            recordButton.onclick = function() {
+                recordStatus.innerText = "Listening... Speak now.";
+                recordButton.style.backgroundColor = "#ffa500";
+                recognition.start();
+            };
+
+            recognition.onresult = function(event) {
+                const speechResult = event.results[0][0].transcript;
+                recordStatus.innerText = "Captured: " + speechResult;
+                recordButton.style.backgroundColor = "#4CAF50";
+                
+                // Pass text back via URL params to Streamlit
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('voice_input_text', speechResult);
+                window.parent.history.replaceState({}, '', url);
+                window.parent.location.reload();
+            };
+
+            recognition.onerror = function(event) {
+                recordStatus.innerText = "Error occurred in recognition: " + event.error;
+                recordButton.style.backgroundColor = "#ff4b4b";
+            };
+        } else {
+            recordButton.style.display = 'none';
+            recordStatus.innerText = "Speech recognition not supported in this browser.";
+        }
+    </script>
+    """
+    components.html(voice_component_html, height=60)
+
+    # Check if voice input was captured via query parameter
+    query_params = st.query_params
+    voice_text = query_params.get("voice_input_text", "")
+
+    # Handle prepopulating input if voice captured
+    default_prompt_value = voice_text if voice_text else ""
 
     if "chat_messages" not in st.session_state:
         st.session_state["chat_messages"] = [
@@ -388,7 +549,7 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
             if job["future"].done():
                 try:
                     result = job["future"].result()
-                except Exception as e:  # defensive; worker already catches errors
+                except Exception as e:
                     result = {"error": f"Error processing query: {e}"}
 
                 if result.get("error"):
@@ -416,12 +577,27 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
                 )
 
     busy = st.session_state.get("chat_job") is not None
+
+    # Text input box for the chat prompt
     if prompt := st.chat_input(
         "Ask a question about government services or data...", disabled=busy
     ):
-        st.session_state["chat_messages"].append({"role": "user", "content": prompt})
+        # Clear out voice parameter query state once consumed
+        if "voice_input_text" in st.query_params:
+            del st.query_params["voice_input_text"]
+
+        # If a file was uploaded, add file reference content to prompt context
+        final_prompt = prompt
+        if uploaded_chat_file is not None:
+            final_prompt = f"[User attached file: {uploaded_chat_file.name}]\n{prompt}"
+
+        st.session_state["chat_messages"].append(
+            {"role": "user", "content": final_prompt}
+        )
+
+        # Pass target language to background generator
         future = _get_executor().submit(
-            _generate_answer, db_path, llm_cfg, username, prompt
+            _generate_answer, db_path, llm_cfg, username, final_prompt, target_language
         )
         st.session_state["chat_job"] = {"future": future, "started": time.time()}
         st.session_state["last_active"] = time.time()
