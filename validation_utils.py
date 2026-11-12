@@ -39,6 +39,26 @@ def _inspect_and_verify_sqlite(
             conn.close()
 
 
+def _not_a_database_message(data: bytes) -> str:
+    """Explain what is wrong when an uploaded file is not an SQLite database."""
+    if data.startswith(b"%PDF"):
+        return (
+            "This is a PDF, not a database backup. Restore DB only accepts a backup made with "
+            "'Download backup'. To add a PDF, use the 'Image & PDF Library' tab."
+        )
+    if data.startswith(b"PK"):
+        return (
+            "This looks like a ZIP/Office file, not a database backup. Restore DB accepts a .db backup "
+            "(or a .zip that contains database.db). To add documents, use the 'Image & PDF Library' tab."
+        )
+    if data[:4] in (b"\x89PNG", b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1") or data[:3] == b"GIF":
+        return "This is a picture, not a database backup. To add pictures, use the 'Image & PDF Library' tab."
+    return (
+        "This file is not a database backup (it is not an SQLite database). Restore DB only accepts a "
+        "backup made with 'Download backup'. To add PDFs or pictures, use the 'Image & PDF Library' tab."
+    )
+
+
 def validate_and_restore_sqlite(
     uploaded_file, db_path: str, expected_tables: list = None
 ) -> tuple[bool, str]:
@@ -49,7 +69,7 @@ def validate_and_restore_sqlite(
     try:
         file_bytes = uploaded_file.getvalue()
 
-        if uploaded_file.name.endswith(".zip"):
+        if uploaded_file.name.lower().endswith(".zip"):
             with zipfile.ZipFile(BytesIO(file_bytes), "r") as zip_ref:
                 target_file = next(
                     (
@@ -64,6 +84,9 @@ def validate_and_restore_sqlite(
                 db_bytes = zip_ref.read(target_file)
         else:
             db_bytes = file_bytes
+
+        if not db_bytes.startswith(b"SQLite format 3\x00"):
+            return False, _not_a_database_message(db_bytes)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_db:
             temp_db.write(db_bytes)

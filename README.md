@@ -75,3 +75,11 @@ Groq, OpenRouter, Gemini, OpenAI...), `anthropic` (Claude API). Running locally 
   Admins: use **💾 Backup DB** in the sidebar regularly and **🔄 Restore DB** after a restart.
 - Set `ADMIN_PASSWORD` / `ANALYST_PASSWORD` in Secrets. Without them the old default passwords
   are used and the app shows a warning.
+
+## Adding documents (PDF handbooks etc.)
+- Add PDFs and pictures in the **🖼️ Image & PDF Library** tab. Each PDF page is stored with its text,
+  so the chat can answer from it (up to 150 pages / 25 MB per PDF).
+- **Restore DB** is only for backups made with **Download backup**. A PDF, Word file or picture
+  (even if renamed to .db) is rejected with a message that points you to the Library tab.
+- The chat answers from the best-matching part of each page. Ask with the words the document uses
+  (for example *"Trincomalee computer science 2022/2023"*).

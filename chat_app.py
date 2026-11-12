@@ -33,6 +33,8 @@ PICTURE_WORDS = re.compile(
 )
 # Internal tables the AI must never read or show
 INTERNAL_TABLES = ("audit_logs", "library_items", "library_files", "web_pages", "web_sources")
+# Not offered to the AI for SQL: documents are searched automatically, never by SQL
+HIDDEN_FROM_SQL_SCHEMA = set(INTERNAL_TABLES) | {"government_services"}
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
 
 MAX_IMAGES = 3
@@ -44,30 +46,55 @@ def _get_executor() -> ThreadPoolExecutor:
 
 
 # ------------------------------------------------------------------ search
-def _clean_token(token: str) -> str:
-    """Keep letters, combining marks (needed for Sinhala/Tamil), digits and '-'."""
-    return "".join(
-        ch
-        for ch in token
-        if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN"
-    )
-
-
 def _extract_keywords(prompt: str) -> list[str]:
+    """Words of 4+ letters/digits. Punctuation separates words ("2022/2023" -> 2022, 2023).
+    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept."""
+    text = "".join(
+        ch if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN" else " "
+        for ch in prompt
+    )
     keywords: list[str] = []
-    for token in prompt.split():
-        w = _clean_token(token).lower()
+    for token in text.split():
+        w = token.strip("-").lower()
         if len(w) > 3 and w not in STOP_WORDS and w not in keywords:
             keywords.append(w)
     return keywords[:8]
 
 
-def _clean_snippet(text: str, limit: int) -> str:
-    """Collapse whitespace/control chars and drop highly repetitive (garbled) text."""
+def _best_window(text: str, keywords: list[str], limit: int) -> str:
+    """The `limit`-character part of `text` that contains the most keywords."""
+    if len(text) <= limit or not keywords:
+        return text[:limit]
+    low = text.lower()
+    starts = []
+    for kw in keywords:
+        pos, n = low.find(kw), 0
+        while pos != -1 and n < 50:
+            starts.append(pos)
+            pos, n = low.find(kw, pos + 1), n + 1
+    if not starts:
+        return text[:limit]
+    best_score, best_start = -1, 0
+    for pos in starts:
+        start = max(0, pos - limit // 5)
+        window = low[start:start + limit]
+        sc = sum(kw in window for kw in keywords)
+        if sc > best_score:
+            best_score, best_start = sc, start
+    if best_start > 0:  # begin at a word boundary
+        nxt = text.find(" ", best_start)
+        if 0 <= nxt < best_start + 30:
+            best_start = nxt + 1
+    return ("... " if best_start > 0 else "") + text[best_start:best_start + limit]
+
+
+def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> str:
+    """Collapse whitespace/control chars, keep the part around the keywords,
+    and drop highly repetitive (garbled) text."""
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", str(text))
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"(.)\1{4,}", r"\1\1\1", text)  # "......." / "-----" -> short
-    text = text[:limit]
+    text = _best_window(text, keywords or [], limit)
     if len(text) > 80 and len(set(text.split())) < 8:
         return ""
     return text
@@ -82,7 +109,11 @@ def _pick_images(
     if wants_image:
         chosen = [h for h in hits if h["has_data"] and h["score"] >= 1]
     else:
-        chosen = [h for h in hits if h["has_data"] and (h["head"] >= 1 or h["body"] >= 3)]
+        chosen = [
+            h for h in hits
+            if h["has_data"]
+            and ((h["kind"] == "image" and h["head"] >= 1) or (h["kind"] == "pdf" and h["body"] >= 3))
+        ]
     if not keywords and wants_picture:
         chosen = library.latest_images(db_path, MAX_IMAGES)
     chosen = chosen[:MAX_IMAGES]
@@ -147,7 +178,7 @@ def _search_documents(
 
         snippets = []
         for label, content, _ in shown + others:
-            cleaned = _clean_snippet(content, snippet_chars)
+            cleaned = _clean_snippet(content, snippet_chars, keywords)
             if cleaned:
                 snippets.append(f"{label}\n{cleaned}...")
             if len(snippets) >= max_snippets:
@@ -162,7 +193,7 @@ def _search_documents(
                     "JOIN web_sources s ON s.id = p.source_id "
                     "WHERE p.chunk_index = 0 ORDER BY s.id DESC LIMIT 2;"
                 ):
-                    cleaned = _clean_snippet(content, snippet_chars)
+                    cleaned = _clean_snippet(content, snippet_chars, keywords)
                     if cleaned:
                         snippets.append(f"[Website: {title or url} - {url}]\n{cleaned}...")
             except sqlite3.Error:
@@ -180,7 +211,7 @@ def _get_schema(db_path: str) -> str:
         ).fetchall()
         lines = []
         for (t_name,) in tables:
-            if t_name in INTERNAL_TABLES:
+            if t_name in HIDDEN_FROM_SQL_SCHEMA:
                 continue
             lines.append(f"Table: {t_name}")
             for c in conn.execute(f'PRAGMA table_info("{t_name}");').fetchall():
@@ -218,16 +249,21 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
                 "You are an expert AI assistant specializing in Sri Lankan Government Services and database reporting.\n"
                 f"Relevant Excerpts (government PDFs, websites and images added by the admin):\n"
                 f"{doc_context or 'No specific excerpt found.'}{note}\n\n"
-                f"Database Schema:\n{db_schema}\n\n"
-                "Answer the user's question accurately using the excerpts above. "
+                f"Database Schema (tables you may query with SQL):\n{db_schema or '(no data tables available)'}\n\n"
+                "Answer the user's question using the excerpts above. Put the complete answer in "
+                '"explanation" as plain text (short lists are fine). '
+                "If the excerpts do not contain the answer, say so clearly instead of guessing. "
                 "If you use a website excerpt, mention that website's URL in your answer. "
                 "Items marked 'Shown to the user' are displayed as pictures under your answer; "
                 "you may refer to them (for example 'see the image below'). "
-                "If the question requires structured database data, provide a valid SQLite query and explanation as JSON, "
-                "otherwise provide a direct textual answer.\n"
+                "Reply in the same language as the user's question.\n"
+                "Only write a SQL query when the user explicitly asks for records, counts, totals or tables "
+                "from the tables listed in the Database Schema. NEVER write SQL to look up document content: "
+                "the excerpts already contain it. If no tables are listed, or the question is about documents, "
+                'leave "sql_query" empty.\n'
                 "Return ONLY a valid JSON object with keys:\n"
-                '1. "explanation": Your detailed answer or explanation.\n'
-                '2. "sql_query": A valid SQLite SELECT statement (or empty string if not querying the database).\n'
+                '1. "explanation": Your answer.\n'
+                '2. "sql_query": A valid SQLite SELECT statement, or an empty string.\n'
                 "No markdown wrappers outside the JSON."
             )
             return f"{system_instruction}\n\nUser Question: {prompt}"
@@ -290,6 +326,8 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
                 finally:
                     conn.close()
                 log_event(db_path, username, "AI_SQL_QUERY", sql_query[:500])
+                if df is not None and df.empty:
+                    explanation += "\n\n(The query returned no rows.)"
 
         shown = [{"caption": _image_caption(im), "bytes": im["bytes"]} for im in images]
         if shown:

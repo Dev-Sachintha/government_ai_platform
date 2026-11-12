@@ -22,7 +22,7 @@ DEFAULTS = {
 }
 PROVIDER_DEFAULTS = {
     "ollama": {"base_url": "http://localhost:11434", "model": "llama3", "vision_model": "llava"},
-    "openai": {"base_url": "https://api.openai.com/v1", "model": "", "vision_model": ""},
+    "openai": {"base_url": "https://api.openai.com/v1", "model": "", "vision_model": ""},  # set LLM_MODEL yourself
     "anthropic": {"base_url": "https://api.anthropic.com", "model": "claude-haiku-5-5", "vision_model": ""},
 }
 PROVIDER_ALIASES = {
@@ -100,6 +100,37 @@ def _post(cfg: dict, path: str, payload: dict, timeout: int) -> requests.Respons
         raise LLMError("The AI model took too long to respond. Try a shorter question.")
 
 
+_NON_CHAT = ("whisper", "tts", "guard", "embed", "orpheus", "playai", "moderation", "rerank")
+
+
+def _not_found_message(cfg: dict) -> str:
+    """Explain a 404: the model name may be retired, or the base URL may be wrong."""
+    base = (
+        f"Model '{cfg['model']}' was not found. It may have been retired or renamed by the provider."
+    )
+    if cfg["provider"] != "openai":
+        return base + " Check LLM_MODEL in Secrets."
+    try:
+        r = requests.get(f"{cfg['base_url']}/models", headers=_headers(cfg), timeout=10)
+        if r.status_code == 200:
+            ids = sorted(
+                m.get("id", "") for m in r.json().get("data", [])
+                if m.get("id") and not any(w in m["id"].lower() for w in _NON_CHAT)
+            )
+            if ids:
+                shown = ", ".join(ids[:15]) + (" ..." if len(ids) > 15 else "")
+                return f"{base} Models available now: {shown}. Set LLM_MODEL in Secrets to one of them."
+            return base + " Set LLM_MODEL in Secrets to a current model name from your provider."
+        if r.status_code in (401, 403):
+            return "The AI service rejected the API key. Check LLM_API_KEY in Secrets."
+        return (
+            f"The address {cfg['base_url']} did not respond as expected. Check LLM_BASE_URL in Secrets "
+            "(for Groq it is https://api.groq.com/openai/v1)."
+        )
+    except requests.exceptions.RequestException:
+        return base + " Check LLM_MODEL and LLM_BASE_URL in Secrets."
+
+
 def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
     if resp.status_code == 200:
         return
@@ -109,7 +140,7 @@ def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
     if resp.status_code in (401, 403):
         raise LLMError("The AI service rejected the API key. Check LLM_API_KEY in Secrets.")
     if resp.status_code == 404:
-        raise LLMError(f"Model '{cfg['model']}' was not found. Check LLM_MODEL (and LLM_BASE_URL).")
+        raise LLMError(_not_found_message(cfg))
     if resp.status_code == 429:
         raise LLMError("The AI service rate limit was reached. Wait a minute and try again.")
     raise LLMError(f"AI service error {resp.status_code}: {body}")
@@ -117,9 +148,15 @@ def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
 
 def _openai_text(resp: requests.Response) -> str:
     try:
-        return resp.json()["choices"][0]["message"]["content"] or ""
-    except (KeyError, IndexError, ValueError):
+        choice = resp.json()["choices"][0]
+        text = choice["message"].get("content") or ""
+    except (KeyError, IndexError, ValueError, AttributeError):
         raise LLMError("The AI service returned an unexpected answer.")
+    if not text.strip():
+        if choice.get("finish_reason") == "length":
+            raise LLMError("The AI model ran out of space before it finished answering. Ask again, or try a shorter question.")
+        raise LLMError("The AI model returned an empty answer. Please try again.")
+    return text
 
 
 def _anthropic_text(resp: requests.Response) -> str:
@@ -155,7 +192,8 @@ def generate(
 
     if provider == "openai":
         payload = {
-            "model": cfg["model"], "temperature": temperature, "max_tokens": max_tokens,
+            "model": cfg["model"], "temperature": temperature,
+            "max_tokens": max(max_tokens, 3000),  # reasoning models spend tokens "thinking" first
             "messages": [{"role": "user", "content": prompt}],
         }
         if json_mode:
@@ -194,7 +232,7 @@ def describe_image(cfg: dict, jpeg: bytes, prompt: str, model: str, timeout: int
 
     if provider == "openai":
         payload = {
-            "model": model, "temperature": 0.2, "max_tokens": 500,
+            "model": model, "temperature": 0.2, "max_tokens": 1500,
             "messages": [{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},

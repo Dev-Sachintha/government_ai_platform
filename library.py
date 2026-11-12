@@ -367,11 +367,15 @@ def search_items(db_path: str, keywords: list[str], limit: int = 20) -> list[dic
     hits = []
     for r in rows:
         d = dict(r)
-        head = f"{d['title']} {d['description']}".lower()
-        body = f"{d['text_content']} {d['ai_text']}".lower()
-        d["head"] = sum(kw in head for kw in keywords)                       # title / description
-        d["body"] = sum((kw in body) and (kw not in head) for kw in keywords)  # PDF text / AI text
-        d["score"] = 2 * d["head"] + d["body"]
+        head_text = f"{d['title']} {d['description']}".lower()
+        body_text = f"{d['text_content']} {d['ai_text']}".lower()
+        head_set = {kw for kw in keywords if kw in head_text}
+        body_set = {kw for kw in keywords if kw in body_text}
+        if d["kind"] == "pdf" and not body_set:
+            continue  # a PDF page only counts if its own text matches (not just the file's title)
+        d["head"] = len(head_set)                 # keywords found in title / description
+        d["body"] = len(body_set)                 # keywords found in the page / AI text
+        d["score"] = 2 * len(head_set) + len(body_set - head_set)
         if d["score"] > 0:
             hits.append(d)
     hits.sort(key=lambda d: (-d["score"], d["id"]))
