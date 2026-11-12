@@ -1,3 +1,4 @@
+import html
 import json
 import re
 import sqlite3
@@ -7,17 +8,55 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import library
 import llm
 from db_utils import is_safe_select, log_event
 
 STOP_WORDS = {
-    "what", "where", "when", "how", "the", "and", "for", "with", "that", "this",
-    "from", "are", "was", "were", "show", "image", "images", "picture", "pictures",
-    "photo", "photos", "photograph", "please", "give", "send", "display", "find",
-    "tell", "about", "have", "need", "want", "could", "would", "there", "their",
-    "them", "some", "into", "also", "does", "your",
+    "what",
+    "where",
+    "when",
+    "how",
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "are",
+    "was",
+    "were",
+    "show",
+    "image",
+    "images",
+    "picture",
+    "pictures",
+    "photo",
+    "photos",
+    "photograph",
+    "please",
+    "give",
+    "send",
+    "display",
+    "find",
+    "tell",
+    "about",
+    "have",
+    "need",
+    "want",
+    "could",
+    "would",
+    "there",
+    "their",
+    "them",
+    "some",
+    "into",
+    "also",
+    "does",
+    "your",
 }
 # Words that mean "I want to SEE something"
 IMAGE_INTENT = re.compile(
@@ -32,7 +71,13 @@ PICTURE_WORDS = re.compile(
     re.IGNORECASE,
 )
 # Internal tables the AI must never read or show
-INTERNAL_TABLES = ("audit_logs", "library_items", "library_files", "web_pages", "web_sources")
+INTERNAL_TABLES = (
+    "audit_logs",
+    "library_items",
+    "library_files",
+    "web_pages",
+    "web_sources",
+)
 # Not offered to the AI for SQL: documents are searched automatically, never by SQL
 HIDDEN_FROM_SQL_SCHEMA = set(INTERNAL_TABLES) | {"government_services"}
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
@@ -48,9 +93,14 @@ def _get_executor() -> ThreadPoolExecutor:
 # ------------------------------------------------------------------ search
 def _extract_keywords(prompt: str) -> list[str]:
     """Words of 4+ letters/digits. Punctuation separates words ("2022/2023" -> 2022, 2023).
-    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept."""
+    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept.
+    """
     text = "".join(
-        ch if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN" else " "
+        (
+            ch
+            if ch in ("-", "\u200d", "\u200c") or unicodedata.category(ch)[0] in "LMN"
+            else " "
+        )
         for ch in prompt
     )
     keywords: list[str] = []
@@ -77,7 +127,7 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
     best_score, best_start = -1, 0
     for pos in starts:
         start = max(0, pos - limit // 5)
-        window = low[start:start + limit]
+        window = low[start : start + limit]
         sc = sum(kw in window for kw in keywords)
         if sc > best_score:
             best_score, best_start = sc, start
@@ -85,7 +135,7 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
         nxt = text.find(" ", best_start)
         if 0 <= nxt < best_start + 30:
             best_start = nxt + 1
-    return ("... " if best_start > 0 else "") + text[best_start:best_start + limit]
+    return ("... " if best_start > 0 else "") + text[best_start : best_start + limit]
 
 
 def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> str:
@@ -101,18 +151,27 @@ def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> 
 
 
 def _pick_images(
-    db_path: str, keywords: list[str], hits: list[dict], wants_image: bool, wants_picture: bool
+    db_path: str,
+    keywords: list[str],
+    hits: list[dict],
+    wants_image: bool,
+    wants_picture: bool,
 ) -> list[dict]:
     """Choose library pictures to show.
     - The user asked to see something ("show", "image", ...): any match counts.
-    - Otherwise only strong matches: a keyword in the title/description, or 3+ words in the text."""
+    - Otherwise only strong matches: a keyword in the title/description, or 3+ words in the text.
+    """
     if wants_image:
         chosen = [h for h in hits if h["has_data"] and h["score"] >= 1]
     else:
         chosen = [
-            h for h in hits
+            h
+            for h in hits
             if h["has_data"]
-            and ((h["kind"] == "image" and h["head"] >= 1) or (h["kind"] == "pdf" and h["body"] >= 3))
+            and (
+                (h["kind"] == "image" and h["head"] >= 1)
+                or (h["kind"] == "pdf" and h["body"] >= 3)
+            )
         ]
     if not keywords and wants_picture:
         chosen = library.latest_images(db_path, MAX_IMAGES)
@@ -159,22 +218,30 @@ def _search_documents(
                     f"WHERE {web_clause} LIMIT 60;",
                     params,
                 ):
-                    candidates.append((f"[Website: {title or url} - {url}]", content, None))
+                    candidates.append(
+                        (f"[Website: {title or url} - {url}]", content, None)
+                    )
             except sqlite3.Error:
                 pass
 
         for h in library_items or []:
             what = "Image" if h["kind"] == "image" else f"PDF page {h['page']}"
             prefix = "Shown to the user: " if h["id"] in shown_ids else "Library: "
-            content = " ".join(x for x in (h["description"], h["ai_text"], h["text_content"]) if x)
-            candidates.append((f"[{prefix}{what} - {h['title']}]", content or h["title"], h["id"]))
+            content = " ".join(
+                x for x in (h["description"], h["ai_text"], h["text_content"]) if x
+            )
+            candidates.append(
+                (f"[{prefix}{what} - {h['title']}]", content or h["title"], h["id"])
+            )
 
         def score(item):
             low = str(item[1]).lower()
             return sum(kw in low for kw in keywords)
 
         shown = [c for c in candidates if c[2] in shown_ids]
-        others = sorted((c for c in candidates if c[2] not in shown_ids), key=score, reverse=True)
+        others = sorted(
+            (c for c in candidates if c[2] not in shown_ids), key=score, reverse=True
+        )
 
         snippets = []
         for label, content, _ in shown + others:
@@ -185,8 +252,6 @@ def _search_documents(
                 break
 
         if not snippets:
-            # No keyword match (e.g. "what is this website about?"): use the
-            # opening section of the most recently added websites.
             try:
                 for title, url, content in conn.execute(
                     "SELECT s.title, s.url, p.content FROM web_pages p "
@@ -195,7 +260,9 @@ def _search_documents(
                 ):
                     cleaned = _clean_snippet(content, snippet_chars, keywords)
                     if cleaned:
-                        snippets.append(f"[Website: {title or url} - {url}]\n{cleaned}...")
+                        snippets.append(
+                            f"[Website: {title or url} - {url}]\n{cleaned}..."
+                        )
             except sqlite3.Error:
                 pass
     finally:
@@ -268,8 +335,6 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
             )
             return f"{system_instruction}\n\nUser Question: {prompt}"
 
-        # Attempt 1: normal context. Attempt 2 (if the model loops): less context,
-        # stronger repetition penalty, higher temperature.
         attempts = [
             {"snippets": 3, "chars": 600, "repeat_penalty": 1.15, "temperature": 0.2},
             {"snippets": 1, "chars": 250, "repeat_penalty": 1.3, "temperature": 0.6},
@@ -277,7 +342,12 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
         raw_text = ""
         for i, cfg in enumerate(attempts):
             doc_context = _search_documents(
-                db_path, keywords, cfg["snippets"], cfg["chars"], library_items, shown_ids
+                db_path,
+                keywords,
+                cfg["snippets"],
+                cfg["chars"],
+                library_items,
+                shown_ids,
             )
             try:
                 raw_text = llm.generate(
@@ -291,7 +361,7 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
                 break
             except llm.LLMError as e:
                 if e.looped and i < len(attempts) - 1:
-                    continue  # local model looped: retry with less context
+                    continue
                 if e.looped:
                     raise llm.LLMError(
                         "The model got stuck repeating itself. Try rephrasing with a "
@@ -305,7 +375,9 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
         except json.JSONDecodeError:
             ai_data = {"explanation": raw_text.strip(), "sql_query": ""}
 
-        explanation = ai_data.get("explanation") or "Here is the information you requested:"
+        explanation = (
+            ai_data.get("explanation") or "Here is the information you requested:"
+        )
         if not isinstance(explanation, str):
             explanation = json.dumps(explanation, ensure_ascii=False, indent=2)
         sql_query = (ai_data.get("sql_query") or "").strip()
@@ -331,7 +403,12 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
 
         shown = [{"caption": _image_caption(im), "bytes": im["bytes"]} for im in images]
         if shown:
-            log_event(db_path, username, "CHAT_IMAGES_SHOWN", ", ".join(s["caption"] for s in shown)[:500])
+            log_event(
+                db_path,
+                username,
+                "CHAT_IMAGES_SHOWN",
+                ", ".join(s["caption"] for s in shown)[:500],
+            )
         return {
             "explanation": explanation,
             "sql_query": sql_query,
@@ -346,8 +423,169 @@ def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) ->
         return {"error": f"Error processing query: {e}"}
 
 
+# --------------------------------------------------------------- TTS & STT UI
+def _render_tts_button(text: str, msg_index: int):
+    """Renders a browser-native Text-to-Speech (TTS) button for assistant responses."""
+    safe_text = json.dumps(text)
+    tts_html = f"""
+    <div style="display:flex; align-items:center; gap:8px; margin-top:4px; font-family: sans-serif;">
+        <button id="play_{msg_index}" onclick="speakText_{msg_index}()"
+            style="background:#f0f2f6; border:1px solid #d0d4dc; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:13px;">
+            🔊 Listen
+        </button>
+        <button id="stop_{msg_index}" onclick="stopText_{msg_index}()"
+            style="background:#f0f2f6; border:1px solid #d0d4dc; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:13px;">
+            ⏹️ Stop
+        </button>
+        <span id="tts_status_{msg_index}" style="font-size:12px; color:#666;"></span>
+    </div>
+    <script>
+        const rawText_{msg_index} = {safe_text};
+
+        function detectLang_{msg_index}(str) {{
+            if (/[\\u0D80-\\u0DFF]/.test(str)) return 'si-LK'; // Sinhala
+            if (/[\\u0B80-\\u0BFF]/.test(str)) return 'ta-IN'; // Tamil
+            if (/[\\u0900-\\u097F]/.test(str)) return 'hi-IN'; // Hindi
+            if (/[\\u0600-\\u06FF]/.test(str)) return 'ar-SA'; // Arabic
+            if (/[\\u4E00-\\u9FFF]/.test(str)) return 'zh-CN'; // Chinese
+            if (/[\\u3040-\\u30FF]/.test(str)) return 'ja-JP'; // Japanese
+            if (/[\\uAC00-\\uD7AF]/.test(str)) return 'ko-KR'; // Korean
+            if (/[\\u0400-\\u04FF]/.test(str)) return 'ru-RU'; // Russian
+            return 'en-US';
+        }}
+
+        function speakText_{msg_index}() {{
+            if (!('speechSynthesis' in window)) {{
+                document.getElementById('tts_status_{msg_index}').innerText = 'TTS not supported in this browser.';
+                return;
+            }}
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(rawText_{msg_index});
+            const detectedLang = detectLang_{msg_index}(rawText_{msg_index});
+            utterance.lang = detectedLang;
+
+            const voices = window.speechSynthesis.getVoices();
+            const match = voices.find(v => v.lang.toLowerCase().startsWith(detectedLang.split('-')[0]));
+            if (match) utterance.voice = match;
+
+            utterance.onstart = () => {{
+                document.getElementById('tts_status_{msg_index}').innerText = 'Speaking (' + detectedLang + ')...';
+            }};
+            utterance.onend = () => {{
+                document.getElementById('tts_status_{msg_index}').innerText = '';
+            }};
+            utterance.onerror = (e) => {{
+                document.getElementById('tts_status_{msg_index}').innerText = 'Audio unavailable for ' + detectedLang;
+            }};
+            window.speechSynthesis.speak(utterance);
+        }}
+
+        function stopText_{msg_index}() {{
+            if ('speechSynthesis' in window) {{
+                window.speechSynthesis.cancel();
+                document.getElementById('tts_status_{msg_index}').innerText = '';
+            }}
+        }}
+    </script>
+    """
+    components.html(tts_html, height=38)
+
+
+def _render_stt_bar(disabled: bool):
+    """Renders a multi-language Speech-to-Text (STT) microphone bar."""
+    disabled_attr = "disabled" if disabled else ""
+    stt_html = f"""
+    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:8px 12px; background:#f8f9fb; border:1px solid #e0e4ec; border-radius:8px; font-family:sans-serif;">
+        <label for="sttLang" style="font-size:13px; font-weight:600; color:#31333F;">🎙️ Voice Input (STT):</label>
+        <select id="sttLang" {disabled_attr} style="padding:5px 8px; border-radius:5px; border:1px solid #ccc; font-size:13px;">
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="si-LK">Sinhala (සිංහල)</option>
+            <option value="ta-IN">Tamil (தமிழ்)</option>
+            <option value="hi-IN">Hindi (हिन्दी)</option>
+            <option value="ar-SA">Arabic (العربية)</option>
+            <option value="zh-CN">Chinese (中文)</option>
+            <option value="ja-JP">Japanese (日本語)</option>
+            <option value="ko-KR">Korean (한국어)</option>
+            <option value="fr-FR">French (Français)</option>
+            <option value="de-DE">German (Deutsch)</option>
+            <option value="es-ES">Spanish (Español)</option>
+            <option value="pt-BR">Portuguese (Português)</option>
+            <option value="ru-RU">Russian (Русский)</option>
+            <option value="it-IT">Italian (Italiano)</option>
+            <option value="nl-NL">Dutch (Nederlands)</option>
+            <option value="tr-TR">Turkish (Türkçe)</option>
+            <option value="vi-VN">Vietnamese (Tiếng Việt)</option>
+            <option value="th-TH">Thai (ไทย)</option>
+            <option value="id-ID">Indonesian (Bahasa Indonesia)</option>
+            <option value="ms-MY">Malay (Bahasa Melayu)</option>
+        </select>
+        <button id="sttBtn" {disabled_attr}
+            style="background:#ff4b4b; color:white; border:none; padding:6px 14px; border-radius:5px; cursor:pointer; font-size:13px; font-weight:600;">
+            🎤 Speak
+        </button>
+        <span id="sttStatus" style="font-size:13px; color:#555;">Select language & click Speak</span>
+    </div>
+    <script>
+        const sttBtn = document.getElementById('sttBtn');
+        const sttStatus = document.getElementById('sttStatus');
+        const sttLang = document.getElementById('sttLang');
+
+        // Persist selected STT language across Streamlit 1s auto-refreshes
+        const savedLang = sessionStorage.getItem('chat_stt_lang');
+        if (savedLang) sttLang.value = savedLang;
+        sttLang.onchange = () => sessionStorage.setItem('chat_stt_lang', sttLang.value);
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {{
+            sttBtn.style.display = 'none';
+            sttStatus.innerText = 'Speech-to-Text is not supported in this browser (use Chrome or Edge).';
+        }} else {{
+            const recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = false;
+
+            sttBtn.onclick = () => {{
+                recognition.lang = sttLang.value;
+                sttStatus.innerText = 'Listening (' + sttLang.value + ')...';
+                sttBtn.style.background = '#e69500';
+                try {{
+                    recognition.start();
+                }} catch (err) {{
+                    sttStatus.innerText = 'Already listening...';
+                }}
+            }};
+
+            recognition.onresult = (event) => {{
+                const transcript = event.results[0][0].transcript;
+                sttStatus.innerText = 'Recognized: "' + transcript + '"';
+                sttBtn.style.background = '#28a745';
+
+                const url = new URL(window.parent.location.href);
+                url.searchParams.set('stt_prompt', transcript);
+                url.searchParams.set('stt_ts', Date.now().toString());
+                window.parent.history.replaceState({{}}, '', url);
+                window.parent.location.reload();
+            }};
+
+            recognition.onerror = (event) => {{
+                sttStatus.innerText = 'STT Error: ' + event.error;
+                sttBtn.style.background = '#ff4b4b';
+            }};
+
+            recognition.onend = () => {{
+                if (sttBtn.style.background === 'rgb(230, 149, 0)') {{
+                    sttBtn.style.background = '#ff4b4b';
+                }}
+            }};
+        }}
+    </script>
+    """
+    components.html(stt_html, height=56)
+
+
 # ------------------------------------------------------------------- the UI
-def _render_message(message: dict):
+def _render_message(message: dict, idx: int):
     st.markdown(message["content"])
     if message.get("sql_query"):
         st.code(message["sql_query"], language="sql")
@@ -355,11 +593,24 @@ def _render_message(message: dict):
         st.dataframe(message["dataframe"], width="stretch")
     for img in message.get("images") or []:
         st.image(img["bytes"], caption=img["caption"], width=520)
+    if message["role"] == "assistant":
+        _render_tts_button(message["content"], idx)
 
 
-def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, username: str):
-    """Chat assistant. The model call runs in a background thread so the 1-second
-    auto-refresh (session timer) cannot interrupt it."""
+def _submit_prompt(db_path: str, llm_cfg: dict, username: str, prompt: str):
+    st.session_state["chat_messages"].append({"role": "user", "content": prompt})
+    future = _get_executor().submit(
+        _generate_answer, db_path, llm_cfg, username, prompt
+    )
+    st.session_state["chat_job"] = {"future": future, "started": time.time()}
+    st.session_state["last_active"] = time.time()
+    st.rerun()
+
+
+def render_ai_chat_interface(
+    db_path: str, llm_cfg: dict, user_role: str, username: str
+):
+    """Chat assistant with multi-language STT & TTS."""
     st.header("💬 Government Service & Database Chat Assistant")
     st.markdown(
         "Ask questions about government service minutes, officer recruitment, or database records. "
@@ -378,9 +629,9 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
             }
         ]
 
-    for message in st.session_state["chat_messages"]:
+    for idx, message in enumerate(st.session_state["chat_messages"]):
         with st.chat_message(message["role"]):
-            _render_message(message)
+            _render_message(message, idx)
 
     job = st.session_state.get("chat_job")
     if job is not None:
@@ -388,7 +639,7 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
             if job["future"].done():
                 try:
                     result = job["future"].result()
-                except Exception as e:  # defensive; worker already catches errors
+                except Exception as e:
                     result = {"error": f"Error processing query: {e}"}
 
                 if result.get("error"):
@@ -416,13 +667,20 @@ def render_ai_chat_interface(db_path: str, llm_cfg: dict, user_role: str, userna
                 )
 
     busy = st.session_state.get("chat_job") is not None
+
+    # Handle incoming STT voice transcript safely (deduplicated via stt_ts)
+    stt_prompt = st.query_params.get("stt_prompt", "").strip()
+    stt_ts = st.query_params.get("stt_ts", "")
+    if stt_prompt and not busy and stt_ts != st.session_state.get("last_stt_ts"):
+        st.session_state["last_stt_ts"] = stt_ts
+        st.query_params.pop("stt_prompt", None)
+        st.query_params.pop("stt_ts", None)
+        _submit_prompt(db_path, llm_cfg, username, stt_prompt)
+
+    # Render STT bar above chat input
+    _render_stt_bar(disabled=busy)
+
     if prompt := st.chat_input(
         "Ask a question about government services or data...", disabled=busy
     ):
-        st.session_state["chat_messages"].append({"role": "user", "content": prompt})
-        future = _get_executor().submit(
-            _generate_answer, db_path, llm_cfg, username, prompt
-        )
-        st.session_state["chat_job"] = {"future": future, "started": time.time()}
-        st.session_state["last_active"] = time.time()
-        st.rerun()
+        _submit_prompt(db_path, llm_cfg, username, prompt)
