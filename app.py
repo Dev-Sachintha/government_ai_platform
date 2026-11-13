@@ -7,7 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import sqlite3
 import streamlit as st
-import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 from db_utils import init_db, is_safe_select, log_event
@@ -184,7 +183,7 @@ def client_activity_and_shortcuts():
     })();
     </script>
     """
-    components.html(tracker_js, height=0, width=0)
+    st.html(tracker_js, unsafe_allow_javascript=True)
 
     if client_ts := st.query_params.get("user_active_ts"):
         last_recorded = st.session_state.get("client_last_active_ts", 0)

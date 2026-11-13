@@ -9,7 +9,6 @@ import uuid
 import pandas as pd
 import pypdf
 import streamlit as st
-import streamlit.components.v1 as components
 
 import library
 import llm
@@ -677,7 +676,7 @@ def _render_message_tools(text: str, msg_index: int):
         }}
     </script>
     """
-    components.html(tools_html, height=34)
+    st.html(tools_html, unsafe_allow_javascript=True)
 
 
 def _render_stt_bar(disabled: bool):
@@ -743,7 +742,7 @@ def _render_stt_bar(disabled: bool):
         }}
     </script>
     """
-    components.html(stt_html, height=48)
+    st.html(stt_html, unsafe_allow_javascript=True)
 
 
 # ------------------------------------------------------------------ Public Share View
@@ -818,7 +817,7 @@ def _render_canvas_pane(thread_title: str):
         html_code = st.session_state["canvas_content"]
         if "<html" not in html_code.lower():
             html_code = f"<!DOCTYPE html><html><body style='font-family:sans-serif;padding:16px;'>{html_code}</body></html>"
-        components.html(html_code, height=460, scrolling=True)
+        st.html(f"<div style=\"height:460px; overflow:auto;\">{html_code}</div>", unsafe_allow_javascript=True)
 
     # Export Canvas (.md, .pdf, .txt)
     c1, c2, c3 = st.columns(3)
@@ -981,7 +980,7 @@ def render_ai_chat_interface(
             _render_canvas_pane(thread_title)
 
     with chat_col:
-        chat_container = st.container(height=470 if show_canvas else None)
+        chat_container = st.container(height=470) if show_canvas else st.container()
         with chat_container:
             for idx, msg in enumerate(messages):
                 with st.chat_message(msg["role"]):
