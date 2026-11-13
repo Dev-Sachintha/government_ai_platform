@@ -14,7 +14,12 @@ from db_utils import init_db, is_safe_select, log_event
 from validation_utils import validate_and_restore_sqlite
 import library
 import llm
-from chat_app import render_ai_chat_interface
+from chat_app import (
+    init_chat_tables,
+    render_ai_chat_interface,
+    render_shared_thread_view,
+    render_sidebar_threads,
+)
 from web_sources import add_or_refresh_source, delete_source, list_sources, validate_url
 
 TIMEOUT_SECONDS = 300
@@ -24,7 +29,6 @@ DEFAULT_ANALYST_PASSWORD = "AnalystPass123!"
 
 
 def _read_secrets(keys):
-    """Read values from Streamlit Secrets (Manage app > Settings > Secrets). Safe if none exist."""
     out = {}
     try:
         for key in keys:
@@ -36,10 +40,11 @@ def _read_secrets(keys):
 
 
 def _load_users():
-    """Passwords come from Secrets / environment; the old defaults are only a fallback."""
     sec = _read_secrets(["ADMIN_PASSWORD", "ANALYST_PASSWORD"])
     admin_pw = str(sec.get("ADMIN_PASSWORD") or os.environ.get("ADMIN_PASSWORD") or "")
-    analyst_pw = str(sec.get("ANALYST_PASSWORD") or os.environ.get("ANALYST_PASSWORD") or "")
+    analyst_pw = str(
+        sec.get("ANALYST_PASSWORD") or os.environ.get("ANALYST_PASSWORD") or ""
+    )
     using_defaults = not (admin_pw and analyst_pw)
     return (
         {
@@ -53,11 +58,6 @@ def _load_users():
 MOCK_USERS, USING_DEFAULT_PASSWORDS = _load_users()
 
 
-# ----------------------------------------------------------------------------
-# Background jobs. The page auto-refreshes every second (session timer), which
-# would interrupt any long action run directly in the script. Long actions run
-# in a worker thread instead and are polled on each refresh.
-# ----------------------------------------------------------------------------
 @st.cache_resource
 def _bg_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=2)
@@ -77,7 +77,6 @@ def job_running(name) -> bool:
 
 
 def poll_job(name, label):
-    """Show progress; when the job finishes, store its (ok, message) result."""
     job = st.session_state.get(f"job:{name}")
     if job is None:
         return
@@ -117,7 +116,6 @@ def _md_escape(text: str) -> str:
 
 
 def _make_backup_bytes(db_path):
-    """Consistent copy of the whole database (works while the app is running)."""
     tmp = tempfile.mktemp(suffix=".db")
     src = sqlite3.connect(db_path)
     dst = sqlite3.connect(tmp)
@@ -134,7 +132,6 @@ def _make_backup_bytes(db_path):
 
 
 def verify_credentials(user: str, pwd: str) -> str | None:
-    """Helper method to streamline credential verification."""
     if user in MOCK_USERS:
         expected_pwd, role = MOCK_USERS[user]
         if hmac.compare_digest(pwd.encode(), expected_pwd.encode()):
@@ -148,9 +145,6 @@ def check_session_timeout():
     current_time = time.time()
     last_active = st.session_state.get("last_active", current_time)
 
-    # NOTE: do not refresh last_active here. This runs on every auto-refresh tick,
-    # which would stop the inactivity timer from ever counting down. last_active is
-    # updated only by real user activity (client tracker, chat, Extend Session).
     if current_time - last_active > TIMEOUT_SECONDS:
         st.session_state["authenticated"] = False
         st.session_state["auth_timeout_expired"] = True
@@ -158,13 +152,14 @@ def check_session_timeout():
     return True
 
 
-def client_activity_tracker():
+def client_activity_and_shortcuts():
+    """Tracks user activity and binds Cmd/Ctrl+K to trigger a New Chat."""
     tracker_js = """
     <script>
     (function() {
         let lastSent = Date.now();
         const throttleInterval = 15000;
-        function notifyActivity(e) {
+        function notifyActivity() {
             const now = Date.now();
             if (now - lastSent > throttleInterval) {
                 lastSent = now;
@@ -175,7 +170,15 @@ def client_activity_tracker():
         }
         window.parent.document.addEventListener('mousemove', notifyActivity);
         window.parent.document.addEventListener('click', notifyActivity);
-        window.parent.document.addEventListener('keydown', notifyActivity);
+        window.parent.document.addEventListener('keydown', function(e) {
+            notifyActivity();
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                const buttons = Array.from(window.parent.document.querySelectorAll('button'));
+                const newChatBtn = buttons.find(b => b.innerText && b.innerText.includes('New Chat'));
+                if (newChatBtn) newChatBtn.click();
+            }
+        });
     })();
     </script>
     """
@@ -228,68 +231,64 @@ def check_password():
 
 
 def render_sidebar_controls(db_path, user_role):
-    """Extracted method for sidebar controls with clean string formatting and control flow."""
     with st.sidebar:
-        st.header("⚙️ Session & Navigation")
         username = st.session_state.get("current_user", "User")
-        st.success(f"User: **{username}**\nRole: **{user_role.upper()}**")
+        render_sidebar_threads(db_path, username)
 
-        elapsed = time.time() - st.session_state.get("last_active", time.time())
-        remaining = max(0, int(TIMEOUT_SECONDS - elapsed))
-        m, s = divmod(remaining, 60)
-        st.info(f"⏱️ Session Timeout in: {m:02d}:{s:02d}")
-        if st.button("🔄 Extend Session"):
-            st.session_state["last_active"] = time.time()
-            st.rerun()
+        st.markdown("---")
+        with st.expander("⚙️ Session & System Admin", expanded=False):
+            st.success(f"User: **{username}** | Role: **{user_role.upper()}**")
 
-        if user_role == "admin":
-            if USING_DEFAULT_PASSWORDS:
-                st.warning(
-                    "⚠️ Default passwords are in use. Set ADMIN_PASSWORD and ANALYST_PASSWORD "
-                    "in the app's Secrets."
-                )
-            st.markdown("---")
-            st.subheader("📁 Government Documents")
-            if st.button("📥 Ingest PDFs from Downloads.zip", disabled=job_running("ingest")):
-                if not os.path.exists("Downloads.zip"):
-                    st.error("Downloads.zip not found in the app folder.")
-                else:
-                    start_job("ingest", _run_ingest, db_path, username)
-                    st.rerun()
-            poll_job("ingest", "Ingesting PDFs")
-            show_result("ingest")
+            elapsed = time.time() - st.session_state.get("last_active", time.time())
+            remaining = max(0, int(TIMEOUT_SECONDS - elapsed))
+            m, s = divmod(remaining, 60)
+            st.info(f"⏱️ Session Timeout in: {m:02d}:{s:02d}")
+            if st.button("🔄 Extend Session"):
+                st.session_state["last_active"] = time.time()
+                st.rerun()
 
-            st.markdown("---")
-            st.subheader("💾 Backup DB")
-            st.caption("On Streamlit Cloud, saved data is lost when the app restarts. Download a backup regularly.")
-            if st.button("📦 Prepare backup"):
-                st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
-                log_event(db_path, username, "DB_BACKUP", "")
-            if st.session_state.get("backup_bytes"):
-                st.download_button(
-                    "⬇️ Download backup",
-                    data=st.session_state["backup_bytes"],
-                    file_name=f"database_backup_{time.strftime('%Y%m%d_%H%M')}.db",
-                    mime="application/octet-stream",
-                )
+            if user_role == "admin":
+                if USING_DEFAULT_PASSWORDS:
+                    st.warning("⚠️ Default passwords are in use. Set Secrets.")
+                st.subheader("📁 Government Documents")
+                if st.button(
+                    "📥 Ingest PDFs from Downloads.zip", disabled=job_running("ingest")
+                ):
+                    if not os.path.exists("Downloads.zip"):
+                        st.error("Downloads.zip not found in the app folder.")
+                    else:
+                        start_job("ingest", _run_ingest, db_path, username)
+                        st.rerun()
+                poll_job("ingest", "Ingesting PDFs")
+                show_result("ingest")
 
-            st.markdown("---")
-            st.subheader("🔄 Restore DB")
-            up_file = st.file_uploader("Upload Backup", type=["zip", "db"])
-            if up_file is not None and st.button("🛡️ Validate & Restore"):
-                success, msg = validate_and_restore_sqlite(up_file, db_path)
-                if success:
-                    log_event(db_path, username, "DB_RESTORE", up_file.name)
-                    st.success(msg)
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error(msg)
+                st.subheader("💾 Backup / Restore DB")
+                if st.button("📦 Prepare backup"):
+                    st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
+                    log_event(db_path, username, "DB_BACKUP", "")
+                if st.session_state.get("backup_bytes"):
+                    st.download_button(
+                        "⬇️ Download backup",
+                        data=st.session_state["backup_bytes"],
+                        file_name=f"database_backup_{time.strftime('%Y%m%d_%H%M')}.db",
+                        mime="application/octet-stream",
+                    )
 
-        if st.button("🚪 Logout"):
-            log_event(db_path, username, "LOGOUT", "")
-            st.session_state["authenticated"] = False
-            st.rerun()
+                up_file = st.file_uploader("Upload Backup", type=["zip", "db"])
+                if up_file is not None and st.button("🛡️ Validate & Restore"):
+                    success, msg = validate_and_restore_sqlite(up_file, db_path)
+                    if success:
+                        log_event(db_path, username, "DB_RESTORE", up_file.name)
+                        st.success(msg)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
+            if st.button("🚪 Logout", use_container_width=True):
+                log_event(db_path, username, "LOGOUT", "")
+                st.session_state["authenticated"] = False
+                st.rerun()
 
 
 def render_web_sources_tab(db_path, user_role, username):
@@ -316,7 +315,9 @@ def render_web_sources_tab(db_path, user_role, username):
         poll_job("web", "Fetching website")
         show_result("web")
     else:
-        st.info("Only admins can add or remove website links. You can ask the chat about them.")
+        st.info(
+            "Only admins can add or remove website links. You can ask the chat about them."
+        )
 
     sources = list_sources(db_path)
     st.subheader(f"Added websites ({len(sources)})")
@@ -337,11 +338,23 @@ def render_web_sources_tab(db_path, user_role, username):
                 )
             if is_admin:
                 with refresh_col:
-                    if st.button("🔄", key=f"web_refresh_{src['id']}", help="Fetch this page again", disabled=busy):
-                        start_job("web", add_or_refresh_source, db_path, src["url"], username)
+                    if st.button(
+                        "🔄",
+                        key=f"web_refresh_{src['id']}",
+                        help="Fetch this page again",
+                        disabled=busy,
+                    ):
+                        start_job(
+                            "web", add_or_refresh_source, db_path, src["url"], username
+                        )
                         st.rerun()
                 with remove_col:
-                    if st.button("🗑️", key=f"web_del_{src['id']}", help="Remove this website", disabled=busy):
+                    if st.button(
+                        "🗑️",
+                        key=f"web_del_{src['id']}",
+                        help="Remove this website",
+                        disabled=busy,
+                    ):
                         delete_source(db_path, src["id"], username)
                         st.rerun()
 
@@ -363,7 +376,9 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
 
     if is_admin:
         with st.expander("🤖 AI description settings"):
-            st.text_input("Vision model", value=llm_cfg["vision_model"], key="vision_model")
+            st.text_input(
+                "Vision model", value=llm_cfg["vision_model"], key="vision_model"
+            )
             if llm_cfg["provider"] == "ollama":
                 st.caption(
                     "AI descriptions make pictures searchable by what they show (and read scanned PDF pages). "
@@ -386,7 +401,9 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                 placeholder="e.g. passport application form, Department of Immigration",
                 height=80,
             )
-            auto = st.checkbox("Describe images with AI after upload (slower, needs a vision model)")
+            auto = st.checkbox(
+                "Describe images with AI after upload (slower, needs a vision model)"
+            )
             submitted = st.form_submit_button("⬆️ Upload", disabled=busy)
         if submitted:
             if not uploads:
@@ -394,14 +411,23 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
             else:
                 payload = [(f.name, f.getvalue()) for f in uploads]
                 start_job(
-                    "lib", library.process_uploads, db_path, payload, desc, username,
-                    auto, llm_cfg, vision_model,
+                    "lib",
+                    library.process_uploads,
+                    db_path,
+                    payload,
+                    desc,
+                    username,
+                    auto,
+                    llm_cfg,
+                    vision_model,
                 )
                 st.rerun()
         poll_job("lib", "Processing files")
         show_result("lib")
     else:
-        st.info("Only admins can add or remove files. You can ask the chat to show them.")
+        st.info(
+            "Only admins can add or remove files. You can ask the chat to show them."
+        )
 
     files = library.list_files(db_path)
     st.subheader(f"Library ({len(files)} files)")
@@ -425,7 +451,9 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                         f"{f['ai_pages']} read by AI · added by {f['added_by']}"
                     )
                     if scanned > f["ai_pages"]:
-                        st.caption("⚠️ Some scanned pages have no searchable text yet. Use the 🤖 button.")
+                        st.caption(
+                            "⚠️ Some scanned pages have no searchable text yet. Use the 🤖 button."
+                        )
                 else:
                     st.caption(
                         f"Image · {'AI described' if f['ai_pages'] else 'no AI description'} · "
@@ -438,16 +466,28 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                 pending = library.pending_description_ids(db_path, fid)
                 with ai_col:
                     if pending and st.button(
-                        f"🤖 Describe ({len(pending)})", key=f"lib_ai_{fid}", disabled=busy,
+                        f"🤖 Describe ({len(pending)})",
+                        key=f"lib_ai_{fid}",
+                        disabled=busy,
                         help="Use the vision model to describe / read these items so the chatbot can find them",
                     ):
                         start_job(
-                            "lib", library.describe_items, db_path, pending, llm_cfg,
-                            vision_model, username,
+                            "lib",
+                            library.describe_items,
+                            db_path,
+                            pending,
+                            llm_cfg,
+                            vision_model,
+                            username,
                         )
                         st.rerun()
                 with del_col:
-                    if st.button("🗑️", key=f"lib_del_{fid}", help="Remove this file", disabled=busy):
+                    if st.button(
+                        "🗑️",
+                        key=f"lib_del_{fid}",
+                        help="Remove this file",
+                        disabled=busy,
+                    ):
                         library.delete_file(db_path, fid, username)
                         _item_image.clear()
                         st.rerun()
@@ -455,20 +495,27 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
             if st.checkbox("👁️ Preview", key=f"lib_prev_{fid}"):
                 page = 1
                 if f["items"] > 1:
-                    page = st.number_input("Page", 1, f["items"], 1, key=f"lib_page_{fid}")
+                    page = st.number_input(
+                        "Page", 1, f["items"], 1, key=f"lib_page_{fid}"
+                    )
                 item_id = library.get_item_id(db_path, fid, int(page))
                 data = _item_image(db_path, item_id) if item_id else None
                 if data:
                     st.image(data, width=480)
                 else:
-                    st.info("No picture available (PDF page pictures need the pypdfium2 package).")
+                    st.info(
+                        "No picture available (PDF page pictures need the pypdfium2 package)."
+                    )
 
             if is_admin:
                 with st.expander("✏️ Edit title / description"):
-                    new_title = st.text_input("Title", value=f["title"], key=f"lib_title_{fid}")
+                    new_title = st.text_input(
+                        "Title", value=f["title"], key=f"lib_title_{fid}"
+                    )
                     new_desc = st.text_area(
                         "Description / keywords (the chatbot searches this)",
-                        value=f["description"], key=f"lib_desc_{fid}",
+                        value=f["description"],
+                        key=f"lib_desc_{fid}",
                     )
                     if st.button("💾 Save", key=f"lib_save_{fid}"):
                         library.update_file(db_path, fid, new_title, new_desc, username)
@@ -476,14 +523,27 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
 
 
 def main():
+    st.set_page_config(
+        page_title="Government AI Workspace", page_icon="💬", layout="wide"
+    )
+    db_path = "database.db"
+    init_db(db_path)
+    init_chat_tables(db_path)
+
+    # Read-only public share link view (bypasses login for shared snapshots)
+    share_token = st.query_params.get("share")
+    if share_token:
+        render_shared_thread_view(db_path, share_token)
+        return
+
     if not check_password():
         return
 
-    st_autorefresh(interval=1000, limit=None, key="timeout_ticker")
-    client_activity_tracker()
+    # Pause 1-second auto-refresh while actively streaming an AI response so stream isn't cut off
+    if not st.session_state.get("is_streaming", False):
+        st_autorefresh(interval=1000, limit=None, key="timeout_ticker")
+    client_activity_and_shortcuts()
 
-    db_path = "database.db"
-    init_db(db_path)
     user_role = st.session_state.get("role", "analyst")
     username = st.session_state.get("current_user", "User")
 
@@ -493,7 +553,7 @@ def main():
 
     tab1, tab_web, tab_lib, tab2 = st.tabs(
         [
-            "💬 Government AI Chat Assistant",
+            "💬 AI Workspace & Chat",
             "🌐 Website Sources",
             "🖼️ Image & PDF Library",
             "📊 Database Workbench",

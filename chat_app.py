@@ -1,12 +1,13 @@
-import html
+import io
 import json
 import re
 import sqlite3
 import time
 import unicodedata
-from concurrent.futures import ThreadPoolExecutor
+import uuid
 
 import pandas as pd
+import pypdf
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -58,43 +59,322 @@ STOP_WORDS = {
     "does",
     "your",
 }
-# Words that mean "I want to SEE something"
 IMAGE_INTENT = re.compile(
     r"\b(image|images|picture|pictures|photo|photos|photograph|photographs|pic|pics|"
     r"diagram|chart|map|screenshot|illustration|show|display|scan|scanned|poster|logo)\b",
     re.IGNORECASE,
 )
-# Words that clearly ask for a picture (used for the "latest images" fallback and the "none found" note)
 PICTURE_WORDS = re.compile(
     r"\b(image|images|picture|pictures|photo|photos|photograph|photographs|pic|pics|"
     r"diagram|map|screenshot|illustration|poster|logo)\b",
     re.IGNORECASE,
 )
-# Internal tables the AI must never read or show
 INTERNAL_TABLES = (
     "audit_logs",
     "library_items",
     "library_files",
     "web_pages",
     "web_sources",
+    "chat_threads",
+    "chat_messages",
+    "shared_links",
 )
-# Not offered to the AI for SQL: documents are searched automatically, never by SQL
 HIDDEN_FROM_SQL_SCHEMA = set(INTERNAL_TABLES) | {"government_services"}
 INTERNAL_SQL = re.compile(r"\b(" + "|".join(INTERNAL_TABLES) + r")\b", re.IGNORECASE)
-
 MAX_IMAGES = 3
 
+PERSONAS = {
+    "🏛️ Sri Lankan Gov & Data Analyst (Default)": (
+        "You are an expert AI assistant specializing in Sri Lankan Government Services, "
+        "policy circulars, and database reporting. Answer accurately using provided excerpts, "
+        "web citations, and SQLite data."
+    ),
+    "🗄️ SQL & Database Architect": (
+        "You are a senior SQLite and data engineering expert. Write clean, optimized read-only "
+        "SELECT queries, explain schemas clearly, and format tabular insights."
+    ),
+    "✍️ Executive Copywriter & Policy Drafter": (
+        "You are an executive government and business copywriter. Produce structured, formal "
+        "memos, circulars, letters, and polished reports ready for publication."
+    ),
+    "🎓 Study Tutor & Technical Explainer": (
+        "You are a patient, insightful tutor. Break complex concepts down step-by-step using "
+        "clear analogies, formatted tables, code snippets, and LaTeX math ($...$)."
+    ),
+    "⚙️ Custom System Persona": "",
+}
 
-@st.cache_resource
-def _get_executor() -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(max_workers=2)
+PROMPT_TEMPLATES = {
+    "Select a quick template...": "",
+    "📄 Summarize Attached Document": "Summarize the key points, dates, and action items from the attached document in bullet points.",
+    "📊 Query Database Records": "Show me a summary table of records from the available database tables.",
+    "🌐 Draft Official Notice (HTML)": "Draft a clean, responsive HTML official public notice with a header, summary table, and contact footer.",
+    "🔍 Latest Policy / News Check": "Search the web for the latest updates on this topic and provide cited source links.",
+}
+
+TONE_TEMPS = {
+    "🎯 Precise & Analytical (0.1)": 0.1,
+    "⚖️ Balanced & Helpful (0.4)": 0.4,
+    "🎨 Creative & Expressive (0.8)": 0.8,
+}
 
 
-# ------------------------------------------------------------------ search
+# ------------------------------------------------------------------ SQLite Thread Storage
+def init_chat_tables(db_path: str):
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                title TEXT NOT NULL,
+                pinned INTEGER DEFAULT 0,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                sql_query TEXT,
+                citations_json TEXT,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES chat_threads(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS shared_links (
+                token TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                created_by TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _create_thread(db_path: str, username: str, title: str = "New Conversation") -> str:
+    tid = str(uuid.uuid4())
+    now = time.time()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO chat_threads (id, username, title, pinned, updated_at) VALUES (?, ?, ?, 0, ?)",
+            (tid, username, title, now),
+        )
+        conn.execute(
+            "INSERT INTO chat_messages (thread_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)",
+            (
+                tid,
+                "Hello! I am your AI Workspace Assistant. Ask questions, drag & drop files, dictate via voice, or open the split-screen Canvas.",
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return tid
+
+
+def _list_threads(db_path: str, username: str, search: str = "") -> list[dict]:
+    conn = sqlite3.connect(db_path)
+    try:
+        if search.strip():
+            q = f"%{search.strip()}%"
+            rows = conn.execute(
+                """
+                SELECT DISTINCT t.id, t.title, t.pinned, t.updated_at
+                FROM chat_threads t
+                LEFT JOIN chat_messages m ON m.thread_id = t.id
+                WHERE t.username = ? AND (t.title LIKE ? OR m.content LIKE ?)
+                ORDER BY t.pinned DESC, t.updated_at DESC
+                """,
+                (username, q, q),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, title, pinned, updated_at FROM chat_threads WHERE username = ? ORDER BY pinned DESC, updated_at DESC",
+                (username,),
+            ).fetchall()
+        return [
+            {"id": r[0], "title": r[1], "pinned": bool(r[2]), "updated_at": r[3]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _load_messages(db_path: str, thread_id: str) -> list[dict]:
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, role, content, sql_query, citations_json FROM chat_messages WHERE thread_id = ? ORDER BY id ASC",
+            (thread_id,),
+        ).fetchall()
+        msgs = []
+        for r in rows:
+            df = None
+            sql_q = r[3] or ""
+            if sql_q and is_safe_select(sql_q) and not INTERNAL_SQL.search(sql_q):
+                try:
+                    df = pd.read_sql_query(sql_q, conn)
+                except Exception:
+                    df = None
+            msgs.append(
+                {
+                    "id": r[0],
+                    "role": r[1],
+                    "content": r[2],
+                    "sql_query": sql_q or None,
+                    "dataframe": df,
+                    "citations": json.loads(r[4]) if r[4] else [],
+                    "images": [],
+                }
+            )
+        return msgs
+    finally:
+        conn.close()
+
+
+def _save_message(
+    db_path: str,
+    thread_id: str,
+    role: str,
+    content: str,
+    sql_query: str = "",
+    citations: list[dict] | None = None,
+    auto_title: str | None = None,
+):
+    now = time.time()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO chat_messages (thread_id, role, content, sql_query, citations_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                role,
+                content,
+                sql_query or None,
+                json.dumps(citations or []),
+                now,
+            ),
+        )
+        if auto_title:
+            conn.execute(
+                "UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ? AND title = 'New Conversation'",
+                (auto_title[:48], now, thread_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE chat_threads SET updated_at = ? WHERE id = ?", (now, thread_id)
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _truncate_thread_from(
+    db_path: str, thread_id: str, message_id: int, inclusive: bool = True
+):
+    op = ">=" if inclusive else ">"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            f"DELETE FROM chat_messages WHERE thread_id = ? AND id {op} ?",
+            (thread_id, message_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def render_sidebar_threads(db_path: str, username: str):
+    """Sidebar thread management: New, Search, Pin, Rename, Delete."""
+    st.subheader("💬 Chat Threads")
+    if st.button("➕ New Chat (Ctrl+K)", use_container_width=True, type="primary"):
+        st.session_state["active_thread_id"] = _create_thread(db_path, username)
+        st.rerun()
+
+    search_q = st.text_input(
+        "🔍 Search threads...",
+        placeholder="Keyword or title",
+        label_visibility="collapsed",
+    )
+    threads = _list_threads(db_path, username, search_q)
+
+    if not threads and not search_q:
+        tid = _create_thread(db_path, username)
+        st.session_state["active_thread_id"] = tid
+        threads = _list_threads(db_path, username)
+
+    active_id = st.session_state.get("active_thread_id")
+    if threads and (not active_id or not any(t["id"] == active_id for t in threads)):
+        active_id = threads[0]["id"]
+        st.session_state["active_thread_id"] = active_id
+
+    for t in threads:
+        is_active = t["id"] == active_id
+        pin_icon = "📌 " if t["pinned"] else ""
+        label = f"{pin_icon}{t['title']}"
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            if st.button(
+                label,
+                key=f"sel_th_{t['id']}",
+                use_container_width=True,
+                type="primary" if is_active else "secondary",
+            ):
+                st.session_state["active_thread_id"] = t["id"]
+                st.rerun()
+        with c2:
+            with st.popover("⋮"):
+                if st.button(
+                    "📌 Unpin" if t["pinned"] else "📌 Pin",
+                    key=f"pin_{t['id']}",
+                    use_container_width=True,
+                ):
+                    conn = sqlite3.connect(db_path)
+                    conn.execute(
+                        "UPDATE chat_threads SET pinned = ? WHERE id = ?",
+                        (0 if t["pinned"] else 1, t["id"]),
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+                new_name = st.text_input(
+                    "Rename", value=t["title"], key=f"ren_in_{t['id']}"
+                )
+                if st.button(
+                    "💾 Save Name", key=f"ren_btn_{t['id']}", use_container_width=True
+                ):
+                    if new_name.strip():
+                        conn = sqlite3.connect(db_path)
+                        conn.execute(
+                            "UPDATE chat_threads SET title = ? WHERE id = ?",
+                            (new_name.strip()[:60], t["id"]),
+                        )
+                        conn.commit()
+                        conn.close()
+                        st.rerun()
+                if st.button(
+                    "🗑️ Delete", key=f"del_{t['id']}", use_container_width=True
+                ):
+                    conn = sqlite3.connect(db_path)
+                    conn.execute(
+                        "DELETE FROM chat_messages WHERE thread_id = ?", (t["id"],)
+                    )
+                    conn.execute("DELETE FROM chat_threads WHERE id = ?", (t["id"],))
+                    conn.commit()
+                    conn.close()
+                    if st.session_state.get("active_thread_id") == t["id"]:
+                        st.session_state.pop("active_thread_id", None)
+                    st.rerun()
+
+
+# ------------------------------------------------------------------ Search, Files & Web Citations
 def _extract_keywords(prompt: str) -> list[str]:
-    """Words of 4+ letters/digits. Punctuation separates words ("2022/2023" -> 2022, 2023).
-    Letters, combining marks (needed for Sinhala/Tamil) and the joiners ZWJ/ZWNJ are kept.
-    """
     text = "".join(
         (
             ch
@@ -112,7 +392,6 @@ def _extract_keywords(prompt: str) -> list[str]:
 
 
 def _best_window(text: str, keywords: list[str], limit: int) -> str:
-    """The `limit`-character part of `text` that contains the most keywords."""
     if len(text) <= limit or not keywords:
         return text[:limit]
     low = text.lower()
@@ -131,7 +410,7 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
         sc = sum(kw in window for kw in keywords)
         if sc > best_score:
             best_score, best_start = sc, start
-    if best_start > 0:  # begin at a word boundary
+    if best_start > 0:
         nxt = text.find(" ", best_start)
         if 0 <= nxt < best_start + 30:
             best_start = nxt + 1
@@ -139,11 +418,9 @@ def _best_window(text: str, keywords: list[str], limit: int) -> str:
 
 
 def _clean_snippet(text: str, limit: int, keywords: list[str] | None = None) -> str:
-    """Collapse whitespace/control chars, keep the part around the keywords,
-    and drop highly repetitive (garbled) text."""
     text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", str(text))
     text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"(.)\1{4,}", r"\1\1\1", text)  # "......." / "-----" -> short
+    text = re.sub(r"(.)\1{4,}", r"\1\1\1", text)
     text = _best_window(text, keywords or [], limit)
     if len(text) > 80 and len(set(text.split())) < 8:
         return ""
@@ -157,10 +434,6 @@ def _pick_images(
     wants_image: bool,
     wants_picture: bool,
 ) -> list[dict]:
-    """Choose library pictures to show.
-    - The user asked to see something ("show", "image", ...): any match counts.
-    - Otherwise only strong matches: a keyword in the title/description, or 3+ words in the text.
-    """
     if wants_image:
         chosen = [h for h in hits if h["has_data"] and h["score"] >= 1]
     else:
@@ -175,27 +448,18 @@ def _pick_images(
         ]
     if not keywords and wants_picture:
         chosen = library.latest_images(db_path, MAX_IMAGES)
-    chosen = chosen[:MAX_IMAGES]
     images = []
-    for h in chosen:
+    for h in chosen[:MAX_IMAGES]:
         data = library.get_item_image(db_path, h["id"])
         if data:
             images.append(dict(h, bytes=data))
     return images
 
 
-def _search_documents(
-    db_path: str,
-    keywords: list[str],
-    max_snippets: int = 3,
-    snippet_chars: int = 600,
-    library_items: list[dict] | None = None,
-    shown_ids: set | None = None,
+def _search_local_documents(
+    db_path: str, keywords: list[str], library_items: list[dict], shown_ids: set
 ) -> str:
-    """Keyword search over PDFs, websites and the image library; best matches first.
-    Pictures that will be shown to the user always come first."""
-    shown_ids = shown_ids or set()
-    candidates = []  # (label, content, library_item_id or None)
+    candidates = []
     conn = sqlite3.connect(db_path)
     try:
         if keywords:
@@ -204,18 +468,15 @@ def _search_documents(
             web_clause = " OR ".join(["p.content LIKE ?"] * len(keywords))
             try:
                 for fn, pg, content in conn.execute(
-                    f"SELECT filename, page_number, content FROM government_services "
-                    f"WHERE {pdf_clause} LIMIT 40;",
+                    f"SELECT filename, page_number, content FROM government_services WHERE {pdf_clause} LIMIT 30;",
                     params,
                 ):
-                    candidates.append((f"[Source: {fn} (Page {pg})]", content, None))
+                    candidates.append((f"", content, None))
             except sqlite3.Error:
                 pass
             try:
                 for title, url, content in conn.execute(
-                    f"SELECT s.title, s.url, p.content FROM web_pages p "
-                    f"JOIN web_sources s ON s.id = p.source_id "
-                    f"WHERE {web_clause} LIMIT 60;",
+                    f"SELECT s.title, s.url, p.content FROM web_pages p JOIN web_sources s ON s.id = p.source_id WHERE {web_clause} LIMIT 40;",
                     params,
                 ):
                     candidates.append(
@@ -244,30 +505,13 @@ def _search_documents(
         )
 
         snippets = []
-        for label, content, _ in shown + others:
-            cleaned = _clean_snippet(content, snippet_chars, keywords)
+        for label, content, _ in (shown + others)[:4]:
+            cleaned = _clean_snippet(content, 650, keywords)
             if cleaned:
-                snippets.append(f"{label}\n{cleaned}...")
-            if len(snippets) >= max_snippets:
-                break
-
-        if not snippets:
-            try:
-                for title, url, content in conn.execute(
-                    "SELECT s.title, s.url, p.content FROM web_pages p "
-                    "JOIN web_sources s ON s.id = p.source_id "
-                    "WHERE p.chunk_index = 0 ORDER BY s.id DESC LIMIT 2;"
-                ):
-                    cleaned = _clean_snippet(content, snippet_chars, keywords)
-                    if cleaned:
-                        snippets.append(
-                            f"[Website: {title or url} - {url}]\n{cleaned}..."
-                        )
-            except sqlite3.Error:
-                pass
+                snippets.append(f"{label}\n{cleaned}")
+        return "\n\n".join(snippets)
     finally:
         conn.close()
-    return "\n\n".join(snippets)
 
 
 def _get_schema(db_path: str) -> str:
@@ -288,218 +532,162 @@ def _get_schema(db_path: str) -> str:
         conn.close()
 
 
-def _image_caption(h: dict) -> str:
-    return h["title"] if h["kind"] == "image" else f"{h['title']} - page {h['page']}"
-
-
-# --------------------------------------------------------------- the model
-def _generate_answer(db_path: str, llm_cfg: dict, username: str, prompt: str) -> dict:
-    """Runs in a BACKGROUND THREAD. Must not call any st.* function."""
+def _live_web_search(query: str, max_results: int = 4) -> list[dict]:
+    """Fetch live web search citations using DuckDuckGo."""
     try:
-        db_schema = _get_schema(db_path)
-        keywords = _extract_keywords(prompt)
-        wants_image = bool(IMAGE_INTENT.search(prompt))
-        wants_picture = bool(PICTURE_WORDS.search(prompt))
+        from duckduckgo_search import DDGS
 
-        hits = library.search_items(db_path, keywords)
-        images = _pick_images(db_path, keywords, hits, wants_image, wants_picture)
-        shown_ids = {im["id"] for im in images}
-        hit_ids = {h["id"] for h in hits}
-        library_items = hits + [im for im in images if im["id"] not in hit_ids]
-
-        note = ""
-        if wants_picture and not images:
-            note = "\n[Note: no matching image was found in the library, so no picture is shown.]"
-
-        def build_prompt(doc_context: str) -> str:
-            system_instruction = (
-                "You are an expert AI assistant specializing in Sri Lankan Government Services and database reporting.\n"
-                f"Relevant Excerpts (government PDFs, websites and images added by the admin):\n"
-                f"{doc_context or 'No specific excerpt found.'}{note}\n\n"
-                f"Database Schema (tables you may query with SQL):\n{db_schema or '(no data tables available)'}\n\n"
-                "Answer the user's question using the excerpts above. Put the complete answer in "
-                '"explanation" as plain text (short lists are fine). '
-                "If the excerpts do not contain the answer, say so clearly instead of guessing. "
-                "If you use a website excerpt, mention that website's URL in your answer. "
-                "Items marked 'Shown to the user' are displayed as pictures under your answer; "
-                "you may refer to them (for example 'see the image below'). "
-                "Reply in the same language as the user's question.\n"
-                "Only write a SQL query when the user explicitly asks for records, counts, totals or tables "
-                "from the tables listed in the Database Schema. NEVER write SQL to look up document content: "
-                "the excerpts already contain it. If no tables are listed, or the question is about documents, "
-                'leave "sql_query" empty.\n'
-                "Return ONLY a valid JSON object with keys:\n"
-                '1. "explanation": Your answer.\n'
-                '2. "sql_query": A valid SQLite SELECT statement, or an empty string.\n'
-                "No markdown wrappers outside the JSON."
-            )
-            return f"{system_instruction}\n\nUser Question: {prompt}"
-
-        attempts = [
-            {"snippets": 3, "chars": 600, "repeat_penalty": 1.15, "temperature": 0.2},
-            {"snippets": 1, "chars": 250, "repeat_penalty": 1.3, "temperature": 0.6},
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        return [
+            {
+                "title": r.get("title", "Web Source"),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", ""),
+            }
+            for r in results
+            if r.get("href")
         ]
-        raw_text = ""
-        for i, cfg in enumerate(attempts):
-            doc_context = _search_documents(
-                db_path,
-                keywords,
-                cfg["snippets"],
-                cfg["chars"],
-                library_items,
-                shown_ids,
-            )
-            try:
-                raw_text = llm.generate(
-                    llm_cfg,
-                    build_prompt(doc_context),
-                    json_mode=True,
-                    temperature=cfg["temperature"],
-                    repeat_penalty=cfg["repeat_penalty"],
-                    max_tokens=1024,
-                )
-                break
-            except llm.LLMError as e:
-                if e.looped and i < len(attempts) - 1:
-                    continue
-                if e.looped:
-                    raise llm.LLMError(
-                        "The model got stuck repeating itself. Try rephrasing with a "
-                        "shorter question (a few keywords works best)."
-                    )
-                raise
+    except Exception:
+        return []
 
-        match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+
+def _parse_uploaded_attachments(files, llm_cfg: dict, vision_model: str) -> str:
+    """Extract text from PDFs, CSVs, TXT/MD, or describe images dropped into the chat bar."""
+    if not files:
+        return ""
+    blocks = []
+    for f in files:
+        name = f.name
+        lower = name.lower()
+        data = f.getvalue()
         try:
-            ai_data = json.loads(match.group(0) if match else raw_text)
-        except json.JSONDecodeError:
-            ai_data = {"explanation": raw_text.strip(), "sql_query": ""}
-
-        explanation = (
-            ai_data.get("explanation") or "Here is the information you requested:"
-        )
-        if not isinstance(explanation, str):
-            explanation = json.dumps(explanation, ensure_ascii=False, indent=2)
-        sql_query = (ai_data.get("sql_query") or "").strip()
-
-        df = None
-        if sql_query:
-            if not is_safe_select(sql_query) or INTERNAL_SQL.search(sql_query):
-                explanation += (
-                    "\n\n⚠️ The generated SQL was blocked because only read-only "
-                    "SELECT queries on the data tables are allowed."
+            if lower.endswith(".pdf"):
+                reader = pypdf.PdfReader(io.BytesIO(data))
+                pages_txt = [p.extract_text() or "" for p in reader.pages[:15]]
+                blocks.append(f"[Attached PDF: {name}]\n" + "\n".join(pages_txt)[:6000])
+            elif lower.endswith(".csv"):
+                df = pd.read_csv(io.BytesIO(data))
+                blocks.append(
+                    f"[Attached CSV: {name} | Shape: {df.shape}]\nColumns: {list(df.columns)}\nSample:\n{df.head(15).to_markdown(index=False)}"
                 )
-                log_event(db_path, username, "BLOCKED_SQL", sql_query[:500])
-                sql_query = ""
+            elif lower.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                ok, _ = llm.vision_ready(llm_cfg, vision_model)
+                if ok:
+                    desc = llm.describe_image(
+                        llm_cfg,
+                        data,
+                        "Transcribe all visible text, tables, and key visual details in this image.",
+                        vision_model,
+                        timeout=120,
+                    )
+                    blocks.append(f"[Attached Image Analysis: {name}]\n{desc}")
+                else:
+                    blocks.append(
+                        f"[Attached Image: {name} (Configure a vision model in Library tab to inspect image pixels)]"
+                    )
             else:
-                conn = sqlite3.connect(db_path)
-                try:
-                    df = pd.read_sql_query(sql_query, conn)
-                finally:
-                    conn.close()
-                log_event(db_path, username, "AI_SQL_QUERY", sql_query[:500])
-                if df is not None and df.empty:
-                    explanation += "\n\n(The query returned no rows.)"
-
-        shown = [{"caption": _image_caption(im), "bytes": im["bytes"]} for im in images]
-        if shown:
-            log_event(
-                db_path,
-                username,
-                "CHAT_IMAGES_SHOWN",
-                ", ".join(s["caption"] for s in shown)[:500],
-            )
-        return {
-            "explanation": explanation,
-            "sql_query": sql_query,
-            "dataframe": df,
-            "images": shown,
-            "error": None,
-        }
-
-    except llm.LLMError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Error processing query: {e}"}
+                blocks.append(
+                    f"[Attached Document: {name}]\n"
+                    + data.decode("utf-8", errors="replace")[:6000]
+                )
+        except Exception as e:
+            blocks.append(f"[Attached File: {name} - Error reading: {e}]")
+    return "\n\n".join(blocks)
 
 
-# --------------------------------------------------------------- TTS & STT UI
-def _render_tts_button(text: str, msg_index: int):
-    """Renders a browser-native Text-to-Speech (TTS) button for assistant responses."""
+def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
+    """Generate clean downloadable PDF bytes using fpdf2."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 14)
+    safe_title = title.encode("latin-1", "replace").decode("latin-1")
+    pdf.multi_cell(0, 8, safe_title)
+    pdf.ln(4)
+    pdf.set_font("Helvetica", size=10)
+    clean_body = (
+        re.sub(r"[#*`]", "", markdown_text)
+        .encode("latin-1", "replace")
+        .decode("latin-1")
+    )
+    pdf.multi_cell(0, 6, clean_body)
+    return bytes(pdf.output())
+
+
+# ------------------------------------------------------------------ Multi-Language TTS & STT
+def _render_message_tools(text: str, msg_index: int):
+    """One-click Copy + Universal Multi-Language TTS (Listen / Stop)."""
     safe_text = json.dumps(text)
-    tts_html = f"""
-    <div style="display:flex; align-items:center; gap:8px; margin-top:4px; font-family: sans-serif;">
-        <button id="play_{msg_index}" onclick="speakText_{msg_index}()"
-            style="background:#f0f2f6; border:1px solid #d0d4dc; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:13px;">
+    tools_html = f"""
+    <div style="display:flex; align-items:center; gap:6px; margin-top:2px; font-family: sans-serif;">
+        <button onclick="copyMsg_{msg_index}()"
+            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
+            📋 Copy
+        </button>
+        <button onclick="speakText_{msg_index}()"
+            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
             🔊 Listen
         </button>
-        <button id="stop_{msg_index}" onclick="stopText_{msg_index}()"
-            style="background:#f0f2f6; border:1px solid #d0d4dc; border-radius:6px; padding:4px 10px; cursor:pointer; font-size:13px;">
+        <button onclick="stopText_{msg_index}()"
+            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
             ⏹️ Stop
         </button>
-        <span id="tts_status_{msg_index}" style="font-size:12px; color:#666;"></span>
+        <span id="status_{msg_index}" style="font-size:11px; color:#888;"></span>
     </div>
     <script>
-        const rawText_{msg_index} = {safe_text};
-
+        const txt_{msg_index} = {safe_text};
+        function copyMsg_{msg_index}() {{
+            navigator.clipboard.writeText(txt_{msg_index});
+            const s = document.getElementById('status_{msg_index}');
+            s.innerText = 'Copied!';
+            setTimeout(() => s.innerText = '', 1800);
+        }}
         function detectLang_{msg_index}(str) {{
-            if (/[\\u0D80-\\u0DFF]/.test(str)) return 'si-LK'; // Sinhala
-            if (/[\\u0B80-\\u0BFF]/.test(str)) return 'ta-IN'; // Tamil
-            if (/[\\u0900-\\u097F]/.test(str)) return 'hi-IN'; // Hindi
-            if (/[\\u0600-\\u06FF]/.test(str)) return 'ar-SA'; // Arabic
-            if (/[\\u4E00-\\u9FFF]/.test(str)) return 'zh-CN'; // Chinese
-            if (/[\\u3040-\\u30FF]/.test(str)) return 'ja-JP'; // Japanese
-            if (/[\\uAC00-\\uD7AF]/.test(str)) return 'ko-KR'; // Korean
-            if (/[\\u0400-\\u04FF]/.test(str)) return 'ru-RU'; // Russian
+            if (/[\\u0D80-\\u0DFF]/.test(str)) return 'si-LK';
+            if (/[\\u0B80-\\u0BFF]/.test(str)) return 'ta-IN';
+            if (/[\\u0900-\\u097F]/.test(str)) return 'hi-IN';
+            if (/[\\u0600-\\u06FF]/.test(str)) return 'ar-SA';
+            if (/[\\u4E00-\\u9FFF]/.test(str)) return 'zh-CN';
+            if (/[\\u3040-\\u30FF]/.test(str)) return 'ja-JP';
+            if (/[\\uAC00-\\uD7AF]/.test(str)) return 'ko-KR';
+            if (/[\\u0400-\\u04FF]/.test(str)) return 'ru-RU';
             return 'en-US';
         }}
-
         function speakText_{msg_index}() {{
-            if (!('speechSynthesis' in window)) {{
-                document.getElementById('tts_status_{msg_index}').innerText = 'TTS not supported in this browser.';
-                return;
-            }}
+            if (!('speechSynthesis' in window)) return;
             window.speechSynthesis.cancel();
-            const utterance = new SpeechSynthesisUtterance(rawText_{msg_index});
-            const detectedLang = detectLang_{msg_index}(rawText_{msg_index});
-            utterance.lang = detectedLang;
-
+            const u = new SpeechSynthesisUtterance(txt_{msg_index});
+            const lang = detectLang_{msg_index}(txt_{msg_index});
+            u.lang = lang;
             const voices = window.speechSynthesis.getVoices();
-            const match = voices.find(v => v.lang.toLowerCase().startsWith(detectedLang.split('-')[0]));
-            if (match) utterance.voice = match;
-
-            utterance.onstart = () => {{
-                document.getElementById('tts_status_{msg_index}').innerText = 'Speaking (' + detectedLang + ')...';
-            }};
-            utterance.onend = () => {{
-                document.getElementById('tts_status_{msg_index}').innerText = '';
-            }};
-            utterance.onerror = (e) => {{
-                document.getElementById('tts_status_{msg_index}').innerText = 'Audio unavailable for ' + detectedLang;
-            }};
-            window.speechSynthesis.speak(utterance);
+            const match = voices.find(v => v.lang.toLowerCase().startsWith(lang.split('-')[0]));
+            if (match) u.voice = match;
+            u.onstart = () => document.getElementById('status_{msg_index}').innerText = 'Speaking (' + lang + ')...';
+            u.onend = () => document.getElementById('status_{msg_index}').innerText = '';
+            window.speechSynthesis.speak(u);
         }}
-
         function stopText_{msg_index}() {{
             if ('speechSynthesis' in window) {{
                 window.speechSynthesis.cancel();
-                document.getElementById('tts_status_{msg_index}').innerText = '';
+                document.getElementById('status_{msg_index}').innerText = '';
             }}
         }}
     </script>
     """
-    components.html(tts_html, height=38)
+    components.html(tools_html, height=34)
 
 
 def _render_stt_bar(disabled: bool):
-    """Renders a multi-language Speech-to-Text (STT) microphone bar."""
+    """Multi-language Voice-to-Text dictation bar."""
     disabled_attr = "disabled" if disabled else ""
     stt_html = f"""
-    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:8px 12px; background:#f8f9fb; border:1px solid #e0e4ec; border-radius:8px; font-family:sans-serif;">
-        <label for="sttLang" style="font-size:13px; font-weight:600; color:#31333F;">🎙️ Voice Input (STT):</label>
-        <select id="sttLang" {disabled_attr} style="padding:5px 8px; border-radius:5px; border:1px solid #ccc; font-size:13px;">
+    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:8px; font-family:sans-serif;">
+        <span style="font-size:12px; font-weight:600;">🎙️ Dictate:</span>
+        <select id="sttLang" {disabled_attr} style="padding:4px 6px; border-radius:5px; border:1px solid #888; font-size:12px;">
             <option value="en-US">English (US)</option>
-            <option value="en-GB">English (UK)</option>
             <option value="si-LK">Sinhala (සිංහල)</option>
             <option value="ta-IN">Tamil (தமிழ்)</option>
             <option value="hi-IN">Hindi (हिन्दी)</option>
@@ -507,180 +695,537 @@ def _render_stt_bar(disabled: bool):
             <option value="zh-CN">Chinese (中文)</option>
             <option value="ja-JP">Japanese (日本語)</option>
             <option value="ko-KR">Korean (한국어)</option>
-            <option value="fr-FR">French (Français)</option>
-            <option value="de-DE">German (Deutsch)</option>
-            <option value="es-ES">Spanish (Español)</option>
-            <option value="pt-BR">Portuguese (Português)</option>
-            <option value="ru-RU">Russian (Русский)</option>
-            <option value="it-IT">Italian (Italiano)</option>
-            <option value="nl-NL">Dutch (Nederlands)</option>
-            <option value="tr-TR">Turkish (Türkçe)</option>
-            <option value="vi-VN">Vietnamese (Tiếng Việt)</option>
-            <option value="th-TH">Thai (ไทย)</option>
-            <option value="id-ID">Indonesian (Bahasa Indonesia)</option>
-            <option value="ms-MY">Malay (Bahasa Melayu)</option>
+            <option value="fr-FR">French</option>
+            <option value="de-DE">German</option>
+            <option value="es-ES">Spanish</option>
+            <option value="ru-RU">Russian</option>
         </select>
         <button id="sttBtn" {disabled_attr}
-            style="background:#ff4b4b; color:white; border:none; padding:6px 14px; border-radius:5px; cursor:pointer; font-size:13px; font-weight:600;">
+            style="background:#ff4b4b; color:white; border:none; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">
             🎤 Speak
         </button>
-        <span id="sttStatus" style="font-size:13px; color:#555;">Select language & click Speak</span>
+        <span id="sttStatus" style="font-size:12px; opacity:0.8;">Click Speak to dictate</span>
     </div>
     <script>
         const sttBtn = document.getElementById('sttBtn');
         const sttStatus = document.getElementById('sttStatus');
         const sttLang = document.getElementById('sttLang');
-
-        // Persist selected STT language across Streamlit 1s auto-refreshes
-        const savedLang = sessionStorage.getItem('chat_stt_lang');
-        if (savedLang) sttLang.value = savedLang;
+        const saved = sessionStorage.getItem('chat_stt_lang');
+        if (saved) sttLang.value = saved;
         sttLang.onchange = () => sessionStorage.setItem('chat_stt_lang', sttLang.value);
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) {{
             sttBtn.style.display = 'none';
-            sttStatus.innerText = 'Speech-to-Text is not supported in this browser (use Chrome or Edge).';
+            sttStatus.innerText = 'Voice dictation requires Chrome or Edge.';
         }} else {{
-            const recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-
+            const rec = new SpeechRecognition();
+            rec.continuous = false;
+            rec.interimResults = false;
             sttBtn.onclick = () => {{
-                recognition.lang = sttLang.value;
+                rec.lang = sttLang.value;
                 sttStatus.innerText = 'Listening (' + sttLang.value + ')...';
                 sttBtn.style.background = '#e69500';
-                try {{
-                    recognition.start();
-                }} catch (err) {{
-                    sttStatus.innerText = 'Already listening...';
-                }}
+                try {{ rec.start(); }} catch (e) {{}}
             }};
-
-            recognition.onresult = (event) => {{
-                const transcript = event.results[0][0].transcript;
-                sttStatus.innerText = 'Recognized: "' + transcript + '"';
-                sttBtn.style.background = '#28a745';
-
+            rec.onresult = (e) => {{
+                const transcript = e.results[0][0].transcript;
                 const url = new URL(window.parent.location.href);
                 url.searchParams.set('stt_prompt', transcript);
                 url.searchParams.set('stt_ts', Date.now().toString());
                 window.parent.history.replaceState({{}}, '', url);
                 window.parent.location.reload();
             }};
-
-            recognition.onerror = (event) => {{
-                sttStatus.innerText = 'STT Error: ' + event.error;
+            rec.onerror = (e) => {{
+                sttStatus.innerText = 'Mic error: ' + e.error;
                 sttBtn.style.background = '#ff4b4b';
-            }};
-
-            recognition.onend = () => {{
-                if (sttBtn.style.background === 'rgb(230, 149, 0)') {{
-                    sttBtn.style.background = '#ff4b4b';
-                }}
             }};
         }}
     </script>
     """
-    components.html(stt_html, height=56)
+    components.html(stt_html, height=48)
 
 
-# ------------------------------------------------------------------- the UI
-def _render_message(message: dict, idx: int):
-    st.markdown(message["content"])
-    if message.get("sql_query"):
-        st.code(message["sql_query"], language="sql")
-    if message.get("dataframe") is not None and not message["dataframe"].empty:
-        st.dataframe(message["dataframe"], width="stretch")
-    for img in message.get("images") or []:
-        st.image(img["bytes"], caption=img["caption"], width=520)
-    if message["role"] == "assistant":
-        _render_tts_button(message["content"], idx)
+# ------------------------------------------------------------------ Public Share View
+def render_shared_thread_view(db_path: str, token: str):
+    st.title("🔗 Shared AI Conversation")
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT title, snapshot_json, created_by, created_at FROM shared_links WHERE token = ?",
+            (token,),
+        ).fetchone()
+    finally:
+        conn.close()
 
+    if not row:
+        st.error("This share link is invalid or has expired.")
+        return
 
-def _submit_prompt(db_path: str, llm_cfg: dict, username: str, prompt: str):
-    st.session_state["chat_messages"].append({"role": "user", "content": prompt})
-    future = _get_executor().submit(
-        _generate_answer, db_path, llm_cfg, username, prompt
+    title, snap_json, author, ts = row
+    st.caption(
+        f"Shared by **{author}** · {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(ts))}"
     )
-    st.session_state["chat_job"] = {"future": future, "started": time.time()}
-    st.session_state["last_active"] = time.time()
-    st.rerun()
+    st.subheader(title)
+    messages = json.loads(snap_json)
+    for idx, m in enumerate(messages):
+        with st.chat_message(m["role"]):
+            st.markdown(m["content"])
+            if m.get("sql_query"):
+                st.code(m["sql_query"], language="sql")
+            if m.get("citations"):
+                cols = st.columns(min(len(m["citations"]), 4))
+                for c, cit in zip(cols, m["citations"]):
+                    c.markdown(f"**[{cit['title'][:38]}]({cit['url']})**")
+            if m["role"] == "assistant":
+                _render_message_tools(m["content"], idx)
 
 
+# ------------------------------------------------------------------ Split-Screen Canvas / Artifacts
+def _extract_latest_artifact(text: str) -> str:
+    """Pull the largest code block (HTML/React/SQL/Python) or long markdown into the Canvas."""
+    blocks = re.findall(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
+    if blocks:
+        return max(blocks, key=len).strip()
+    return text.strip()
+
+
+def _render_canvas_pane(thread_title: str):
+    st.subheader("🎨 Split-Screen Canvas / Artifact")
+    if "canvas_content" not in st.session_state:
+        st.session_state["canvas_content"] = (
+            "# Draft Document\n\nGenerate code or a document in chat, or edit directly here."
+        )
+
+    view_mode = st.radio(
+        "Workspace Mode",
+        ["✏️ Editor", "📖 Markdown Preview", "🌐 Live HTML / JS Preview"],
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    if view_mode == "✏️ Editor":
+        st.session_state["canvas_content"] = st.text_area(
+            "Canvas Content",
+            value=st.session_state["canvas_content"],
+            height=460,
+            label_visibility="collapsed",
+        )
+    elif view_mode == "📖 Markdown Preview":
+        with st.container(border=True, height=460):
+            st.markdown(st.session_state["canvas_content"])
+    else:
+        html_code = st.session_state["canvas_content"]
+        if "<html" not in html_code.lower():
+            html_code = f"<!DOCTYPE html><html><body style='font-family:sans-serif;padding:16px;'>{html_code}</body></html>"
+        components.html(html_code, height=460, scrolling=True)
+
+    # Export Canvas (.md, .pdf, .txt)
+    c1, c2, c3 = st.columns(3)
+    content = st.session_state["canvas_content"]
+    c1.download_button(
+        "⬇️ .MD",
+        data=content,
+        file_name="canvas_draft.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+    c2.download_button(
+        "⬇️ .TXT",
+        data=content,
+        file_name="canvas_draft.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+    c3.download_button(
+        "⬇️ .PDF",
+        data=_export_pdf_bytes(thread_title, content),
+        file_name="canvas_draft.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+
+# ------------------------------------------------------------------ Main AI Chat Interface
 def render_ai_chat_interface(
     db_path: str, llm_cfg: dict, user_role: str, username: str
 ):
-    """Chat assistant with multi-language STT & TTS."""
-    st.header("💬 Government Service & Database Chat Assistant")
-    st.markdown(
-        "Ask questions about government service minutes, officer recruitment, or database records. "
-        "Ask to *show* something to get matching images from the library."
+    active_tid = st.session_state.get("active_thread_id")
+    if not active_tid:
+        active_tid = _create_thread(db_path, username)
+        st.session_state["active_thread_id"] = active_tid
+
+    # --- TOP PRODUCTIVITY HEADER BAR ---
+    h1, h2, h3, h4, h5 = st.columns([2.2, 1.8, 1.3, 1.2, 1.2])
+    with h1:
+        custom_model = st.text_input(
+            "🤖 Model",
+            value=st.session_state.get("override_model", llm_cfg["model"]),
+            help="Switch between fast models (e.g., llama3, gpt-4o-mini) and reasoning models (e.g., o3-mini, deepseek-r1).",
+        )
+        st.session_state["override_model"] = custom_model.strip()
+        active_llm_cfg = dict(llm_cfg, model=custom_model.strip() or llm_cfg["model"])
+
+    with h2:
+        persona_name = st.selectbox("🎭 System Persona", list(PERSONAS.keys()))
+    with h3:
+        tone_label = st.selectbox("🎚️ Tone", list(TONE_TEMPS.keys()), index=1)
+        temperature = TONE_TEMPS[tone_label]
+    with h4:
+        st.write("")
+        use_web = st.toggle(
+            "🌐 Web Search", value=False, help="Fetch live web citations"
+        )
+    with h5:
+        st.write("")
+        show_canvas = st.toggle(
+            "🎨 Canvas", value=st.session_state.get("show_canvas", False)
+        )
+        st.session_state["show_canvas"] = show_canvas
+
+    if persona_name == "⚙️ Custom System Persona":
+        custom_sys = st.text_area(
+            "Custom System Instructions",
+            value=st.session_state.get(
+                "custom_system_prompt", "You are a helpful AI assistant."
+            ),
+            height=68,
+        )
+        st.session_state["custom_system_prompt"] = custom_sys
+        base_persona = custom_sys
+    else:
+        base_persona = PERSONAS[persona_name]
+
+    # Export & Public Share Bar
+    messages = _load_messages(db_path, active_tid)
+    conn = sqlite3.connect(db_path)
+    t_row = conn.execute(
+        "SELECT title FROM chat_threads WHERE id = ?", (active_tid,)
+    ).fetchone()
+    conn.close()
+    thread_title = t_row[0] if t_row else "Conversation"
+
+    exp1, exp2, exp3, exp4, _ = st.columns([1.1, 1.1, 1.1, 1.4, 3.3])
+    full_md = f"# {thread_title}\n\n" + "\n\n---\n\n".join(
+        f"**{m['role'].upper()}**:\n{m['content']}" for m in messages
     )
-    st.caption(f"🤖 {llm.describe_config(llm_cfg)}")
-    problem = llm.config_problem(llm_cfg)
+    exp1.download_button(
+        "📥 Export MD",
+        data=full_md,
+        file_name=f"{thread_title}.md",
+        mime="text/markdown",
+        use_container_width=True,
+    )
+    exp2.download_button(
+        "📥 Export TXT",
+        data=full_md,
+        file_name=f"{thread_title}.txt",
+        mime="text/plain",
+        use_container_width=True,
+    )
+    exp3.download_button(
+        "📥 Export PDF",
+        data=_export_pdf_bytes(thread_title, full_md),
+        file_name=f"{thread_title}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+    with exp4:
+        with st.popover("🔗 Share Link", use_container_width=True):
+            if st.button("Generate Public Read-Only Link", use_container_width=True):
+                tok = uuid.uuid4().hex[:12]
+                snap = [
+                    {
+                        "role": m["role"],
+                        "content": m["content"],
+                        "sql_query": m["sql_query"],
+                        "citations": m["citations"],
+                    }
+                    for m in messages
+                ]
+                conn = sqlite3.connect(db_path)
+                conn.execute(
+                    "INSERT INTO shared_links (token, thread_id, title, snapshot_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        tok,
+                        active_tid,
+                        thread_title,
+                        json.dumps(snap),
+                        username,
+                        time.time(),
+                    ),
+                )
+                conn.commit()
+                conn.close()
+                st.session_state["last_share_token"] = tok
+            if st.session_state.get("last_share_token"):
+                st.code(
+                    f"?share={st.session_state['last_share_token']}", language="text"
+                )
+                st.caption(
+                    "Append this query parameter to your app URL to share read-only."
+                )
+
+    problem = llm.config_problem(active_llm_cfg)
     if problem:
         st.error(problem)
 
-    if "chat_messages" not in st.session_state:
-        st.session_state["chat_messages"] = [
-            {
-                "role": "assistant",
-                "content": "Hello! I am your AI assistant for government services and database records. How can I help you today?",
-            }
-        ]
+    # --- SPLIT SCREEN LAYOUT (Chat Left | Canvas Right) ---
+    if show_canvas:
+        chat_col, canvas_col = st.columns([1.15, 1])
+    else:
+        chat_col, canvas_col = st.container(), None
 
-    for idx, message in enumerate(st.session_state["chat_messages"]):
-        with st.chat_message(message["role"]):
-            _render_message(message, idx)
+    if canvas_col is not None:
+        with canvas_col:
+            _render_canvas_pane(thread_title)
 
-    job = st.session_state.get("chat_job")
-    if job is not None:
-        with st.chat_message("assistant"):
-            if job["future"].done():
-                try:
-                    result = job["future"].result()
-                except Exception as e:
-                    result = {"error": f"Error processing query: {e}"}
+    with chat_col:
+        chat_container = st.container(height=470 if show_canvas else None)
+        with chat_container:
+            for idx, msg in enumerate(messages):
+                with st.chat_message(msg["role"]):
+                    # Inline prompt editor if user clicked Edit on this message
+                    if st.session_state.get("editing_msg_id") == msg["id"]:
+                        edited_txt = st.text_area(
+                            "Edit prompt",
+                            value=msg["content"],
+                            key=f"ed_box_{msg['id']}",
+                        )
+                        ec1, ec2 = st.columns([1, 5])
+                        if ec1.button(
+                            "Send Edit", key=f"ed_save_{msg['id']}", type="primary"
+                        ):
+                            st.session_state.pop("editing_msg_id", None)
+                            _truncate_thread_from(
+                                db_path, active_tid, msg["id"], inclusive=True
+                            )
+                            st.session_state["pending_prompt"] = edited_txt
+                            st.rerun()
+                        if ec2.button("Cancel", key=f"ed_cancel_{msg['id']}"):
+                            st.session_state.pop("editing_msg_id", None)
+                            st.rerun()
+                    else:
+                        st.markdown(msg["content"])
 
-                if result.get("error"):
-                    st.session_state["chat_messages"].append(
-                        {"role": "assistant", "content": f"❌ {result['error']}"}
-                    )
-                else:
-                    st.session_state["chat_messages"].append(
-                        {
-                            "role": "assistant",
-                            "content": result["explanation"],
-                            "sql_query": result["sql_query"] or None,
-                            "dataframe": result["dataframe"],
-                            "images": result.get("images") or [],
-                        }
-                    )
-                st.session_state["chat_job"] = None
-                st.session_state["last_active"] = time.time()
-                st.rerun()
-            else:
-                waited = int(time.time() - job["started"])
-                st.info(
-                    f"⏳ Thinking... {waited}s (the first answer can take a minute "
-                    "while the model loads)"
+                        if msg.get("sql_query"):
+                            st.code(msg["sql_query"], language="sql")
+                        if (
+                            msg.get("dataframe") is not None
+                            and not msg["dataframe"].empty
+                        ):
+                            st.dataframe(msg["dataframe"], width="stretch")
+
+                        # Clickable Web Search Citation Cards
+                        if msg.get("citations"):
+                            st.caption("🌐 Web Sources:")
+                            cit_cols = st.columns(min(len(msg["citations"]), 4))
+                            for c_col, cit in zip(cit_cols, msg["citations"]):
+                                with c_col:
+                                    with st.container(border=True):
+                                        st.markdown(
+                                            f"**[{cit['title'][:40]}]({cit['url']})**"
+                                        )
+                                        st.caption(cit["snippet"][:85] + "...")
+
+                        # Message Action Controls
+                        if msg["role"] == "user" and idx > 0:
+                            if st.button("✏️ Edit", key=f"edit_btn_{msg['id']}"):
+                                st.session_state["editing_msg_id"] = msg["id"]
+                                st.rerun()
+                        elif msg["role"] == "assistant" and idx > 0:
+                            ac1, ac2, ac3 = st.columns([1.2, 1.4, 4])
+                            if ac1.button("🔄 Regenerate", key=f"regen_{msg['id']}"):
+                                prev_user = next(
+                                    (
+                                        m
+                                        for m in reversed(messages[:idx])
+                                        if m["role"] == "user"
+                                    ),
+                                    None,
+                                )
+                                if prev_user:
+                                    _truncate_thread_from(
+                                        db_path, active_tid, msg["id"], inclusive=True
+                                    )
+                                    st.session_state["pending_regen_prompt"] = (
+                                        prev_user["content"]
+                                    )
+                                    st.rerun()
+                            if ac2.button("🎨 Send to Canvas", key=f"canv_{msg['id']}"):
+                                st.session_state["canvas_content"] = (
+                                    _extract_latest_artifact(msg["content"])
+                                )
+                                st.session_state["show_canvas"] = True
+                                st.rerun()
+                            _render_message_tools(msg["content"], idx)
+
+        # --- PROMPT TEMPLATES, ATTACHMENTS, STT & CHAT INPUT ---
+        with st.expander("📎 Attach Files / Images & Prompt Templates", expanded=False):
+            t_col, f_col = st.columns([1, 1.3])
+            with t_col:
+                chosen_tpl = st.selectbox(
+                    "Quick Prompt Templates", list(PROMPT_TEMPLATES.keys())
+                )
+                if chosen_tpl != "Select a quick template..." and st.button(
+                    "Insert & Send Template"
+                ):
+                    st.session_state["pending_prompt"] = PROMPT_TEMPLATES[chosen_tpl]
+                    st.rerun()
+            with f_col:
+                dropped_files = st.file_uploader(
+                    "Drag & Drop PDFs, CSVs, TXT/MD, or Screenshots",
+                    type=["pdf", "csv", "txt", "md", "png", "jpg", "jpeg", "webp"],
+                    accept_multiple_files=True,
+                    key="chat_drag_drop_files",
                 )
 
-    busy = st.session_state.get("chat_job") is not None
+        _render_stt_bar(disabled=False)
 
-    # Handle incoming STT voice transcript safely (deduplicated via stt_ts)
-    stt_prompt = st.query_params.get("stt_prompt", "").strip()
-    stt_ts = st.query_params.get("stt_ts", "")
-    if stt_prompt and not busy and stt_ts != st.session_state.get("last_stt_ts"):
-        st.session_state["last_stt_ts"] = stt_ts
-        st.query_params.pop("stt_prompt", None)
-        st.query_params.pop("stt_ts", None)
-        _submit_prompt(db_path, llm_cfg, username, stt_prompt)
+        # Capture STT voice input if submitted
+        stt_prompt = st.query_params.get("stt_prompt", "").strip()
+        stt_ts = st.query_params.get("stt_ts", "")
+        if stt_prompt and stt_ts != st.session_state.get("last_stt_ts"):
+            st.session_state["last_stt_ts"] = stt_ts
+            st.query_params.pop("stt_prompt", None)
+            st.query_params.pop("stt_ts", None)
+            st.session_state["pending_prompt"] = stt_prompt
+            st.rerun()
 
-    # Render STT bar above chat input
-    _render_stt_bar(disabled=busy)
+        typed_prompt = st.chat_input(
+            "Message AI Workspace... (Enter to send, Shift+Enter for new line)"
+        )
 
-    if prompt := st.chat_input(
-        "Ask a question about government services or data...", disabled=busy
-    ):
-        _submit_prompt(db_path, llm_cfg, username, prompt)
+        # Determine active prompt (typed, edited, regenerated, or voice/template)
+        user_prompt = None
+        already_saved_user = False
+        if st.session_state.get("pending_regen_prompt"):
+            user_prompt = st.session_state.pop("pending_regen_prompt")
+            already_saved_user = True
+        elif st.session_state.get("pending_prompt"):
+            user_prompt = st.session_state.pop("pending_prompt")
+        elif typed_prompt:
+            user_prompt = typed_prompt
+
+        if user_prompt:
+            vision_model = (
+                st.session_state.get("vision_model") or llm_cfg["vision_model"]
+            )
+            attachment_context = _parse_uploaded_attachments(
+                dropped_files, active_llm_cfg, vision_model
+            )
+            display_prompt = user_prompt
+            if dropped_files:
+                names = ", ".join(f.name for f in dropped_files)
+                display_prompt = f"📎 *Attached: {names}*\n\n{user_prompt}"
+
+            if not already_saved_user:
+                _save_message(
+                    db_path, active_tid, "user", display_prompt, auto_title=user_prompt
+                )
+                with chat_container:
+                    with st.chat_message("user"):
+                        st.markdown(display_prompt)
+
+            # Gather context: Local Gov PDFs/Websites + Library Images + Optional Live Web Search
+            keywords = _extract_keywords(user_prompt)
+            wants_image = bool(IMAGE_INTENT.search(user_prompt))
+            wants_picture = bool(PICTURE_WORDS.search(user_prompt))
+            hits = library.search_items(db_path, keywords)
+            images = _pick_images(db_path, keywords, hits, wants_image, wants_picture)
+            shown_ids = {im["id"] for im in images}
+            hit_ids = {h["id"] for h in hits}
+            library_items = hits + [im for im in images if im["id"] not in hit_ids]
+            local_context = _search_local_documents(
+                db_path, keywords, library_items, shown_ids
+            )
+            db_schema = _get_schema(db_path)
+
+            citations = _live_web_search(user_prompt) if use_web else []
+            web_context = "\n".join(
+                f"- [{c['title']}]({c['url']}): {c['snippet']}" for c in citations
+            )
+
+            system_prompt = (
+                f"{base_persona}\n\n"
+                "Support rich Markdown, formatted tables, syntax-highlighted code blocks, and LaTeX math ($...$ / $$...$$). "
+                "Reply in the exact same language as the user's message.\n"
+                f"Local Government & Library Excerpts:\n{local_context or 'None'}\n\n"
+                f"Attached File Contents:\n{attachment_context or 'None'}\n\n"
+                f"Live Web Search Results:\n{web_context or 'None'}\n\n"
+                f"SQLite Database Schema:\n{db_schema or 'None'}\n"
+                "If the user asks for database records/counts from the SQLite schema, include a valid read-only "
+                "SELECT query inside a ```sql code block."
+            )
+
+            llm_messages = [{"role": "system", "content": system_prompt}]
+            for m in messages[-8:]:
+                llm_messages.append({"role": m["role"], "content": m["content"]})
+            if not already_saved_user:
+                llm_messages.append({"role": "user", "content": user_prompt})
+
+            # --- REAL-TIME STREAMING RESPONSE WITH STOP CONTROL ---
+            st.session_state["is_streaming"] = True
+            st.session_state["stop_stream"] = False
+            full_response = ""
+
+            with chat_container:
+                with st.chat_message("assistant"):
+                    stop_placeholder = st.empty()
+                    if stop_placeholder.button(
+                        "⏹️ Stop Generating", key="stop_gen_btn"
+                    ):
+                        st.session_state["stop_stream"] = True
+
+                    def token_generator():
+                        nonlocal full_response
+                        for chunk in llm.stream_generate(
+                            active_llm_cfg, llm_messages, temperature=temperature
+                        ):
+                            if st.session_state.get("stop_stream"):
+                                break
+                            full_response += chunk
+                            yield chunk
+
+                    try:
+                        st.write_stream(token_generator())
+                    except Exception as e:
+                        full_response += f"\n\n❌ Stream interrupted: {e}"
+                        st.error(full_response)
+                    finally:
+                        stop_placeholder.empty()
+                        st.session_state["is_streaming"] = False
+
+                    for im in images:
+                        st.image(im["bytes"], caption=im["title"], width=500)
+
+            # Extract and safely execute any generated SQL query
+            sql_match = re.search(
+                r"```sql\s+(SELECT\b.*?)```", full_response, re.IGNORECASE | re.DOTALL
+            )
+            sql_query = sql_match.group(1).strip() if sql_match else ""
+            if sql_query and (
+                not is_safe_select(sql_query) or INTERNAL_SQL.search(sql_query)
+            ):
+                log_event(db_path, username, "BLOCKED_SQL", sql_query[:500])
+                sql_query = ""
+            elif sql_query:
+                log_event(db_path, username, "AI_SQL_QUERY", sql_query[:500])
+
+            _save_message(
+                db_path,
+                active_tid,
+                "assistant",
+                full_response or "(Generation stopped)",
+                sql_query=sql_query,
+                citations=citations,
+            )
+
+            # Auto-populate Canvas if response contains substantial code or document structure
+            if "```" in full_response and len(full_response) > 350:
+                st.session_state["canvas_content"] = _extract_latest_artifact(
+                    full_response
+                )
+
+            st.session_state["last_active"] = time.time()
+            st.rerun()
