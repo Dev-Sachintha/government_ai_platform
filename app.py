@@ -29,11 +29,13 @@ DEFAULT_ANALYST_PASSWORD = "AnalystPass123!"
 
 
 def _read_secrets(keys):
+    """Read values from Streamlit Secrets safely without throwing attribute errors."""
     out = {}
     try:
-        for key in keys:
-            if key in st.secrets:
-                out[key] = st.secrets[key]
+        if hasattr(st, "secrets"):
+            for key in keys:
+                if key in st.secrets:
+                    out[key] = st.secrets[key]
     except Exception:
         pass
     return out
@@ -549,7 +551,15 @@ def main():
 
     render_sidebar_controls(db_path, user_role)
 
-    llm_cfg = llm.load_config(_read_secrets(llm.SECRET_KEYS))
+    fallback_keys = [
+        "LLM_PROVIDER",
+        "LLM_BASE_URL",
+        "LLM_API_KEY",
+        "LLM_MODEL",
+        "LLM_VISION_MODEL",
+    ]
+    secret_keys = getattr(llm, "SECRET_KEYS", fallback_keys)
+    llm_cfg = llm.load_config(_read_secrets(secret_keys))
 
     tab1, tab_web, tab_lib, tab2 = st.tabs(
         [
