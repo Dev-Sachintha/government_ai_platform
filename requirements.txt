@@ -8,3 +8,5 @@ streamlit-autorefresh>=1.0.1
 pypdf>=4.0.0
 pypdfium2>=4.30.0
 Pillow>=10.0.0
+fpdf2
+duckduckgo-search
