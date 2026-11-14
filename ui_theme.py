@@ -137,7 +137,7 @@ header[data-testid="stHeader"] { background: transparent; }
 
 /* Login page: the picture fills the whole screen */
 .stApp:has(.ui-login) {
-  background-image:
+  background:
     linear-gradient(rgba(5,8,25,0.30), rgba(5,8,25,0.55)),
     url('/app/static/background.jpg') center 20% / cover fixed no-repeat !important;
 }
