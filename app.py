@@ -23,46 +23,6 @@ from web_sources import add_or_refresh_source, delete_source, list_sources, vali
 
 TIMEOUT_SECONDS = 300
 
-
-def apply_user_friendly_styles():
-    """Apply a clean, responsive and accessible visual layer to the workspace."""
-    st.markdown(
-        """
-        <style>
-        :root { --gov-accent: #2563eb; --gov-accent-soft: rgba(37,99,235,.10); }
-        .block-container { padding-top: 1.35rem; padding-bottom: 3rem; max-width: 1500px; }
-        [data-testid="stHeader"] { background: transparent; }
-        [data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,.18); }
-        [data-testid="stSidebar"] .block-container { padding-top: 1.2rem; }
-        h1, h2, h3 { letter-spacing: -.025em; }
-        h1 { font-weight: 750 !important; }
-        [data-testid="stTabs"] [role="tab"] { border-radius: 10px 10px 0 0; padding: .7rem 1rem; font-weight: 600; }
-        [data-testid="stTabs"] [aria-selected="true"] { color: var(--gov-accent); }
-        [data-testid="stButton"] button, [data-testid="stDownloadButton"] button,
-        [data-testid="stFormSubmitButton"] button { border-radius: 10px; font-weight: 600; min-height: 2.55rem; transition: transform .12s ease, box-shadow .12s ease; }
-        [data-testid="stButton"] button:hover, [data-testid="stDownloadButton"] button:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
-        [data-testid="stTextInput"] input, [data-testid="stTextArea"] textarea,
-        [data-testid="stSelectbox"] div[data-baseweb="select"] { border-radius: 10px; }
-        [data-testid="stChatInput"] textarea { border-radius: 14px; }
-        [data-testid="stExpander"] { border-radius: 12px; }
-        [data-testid="stAlert"] { border-radius: 12px; }
-        [data-testid="stMetric"] { background: var(--gov-accent-soft); padding: .8rem 1rem; border-radius: 12px; }
-        .gov-hero { padding: 1.2rem 1.35rem; border: 1px solid rgba(128,128,128,.2); border-radius: 16px;
-                    background: linear-gradient(115deg, var(--gov-accent-soft), rgba(128,128,128,.035)); margin: .2rem 0 1rem; }
-        .gov-hero-title { font-size: clamp(1.35rem, 2.5vw, 1.9rem); font-weight: 800; margin: 0; }
-        .gov-hero-sub { opacity: .78; margin: .35rem 0 0; font-size: .96rem; }
-        .gov-chip { display:inline-block; padding:.25rem .6rem; margin:.35rem .3rem 0 0; border-radius:999px;
-                    background:var(--gov-accent-soft); font-size:.78rem; font-weight:600; }
-        @media (max-width: 700px) {
-          .block-container { padding-left: .8rem; padding-right: .8rem; }
-          [data-testid="stTabs"] [role="tab"] { padding: .55rem .55rem; font-size: .82rem; }
-        }
-        @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 DEFAULT_ADMIN_PASSWORD = "SecurePass123!"
 DEFAULT_ANALYST_PASSWORD = "AnalystPass123!"
 
@@ -565,10 +525,8 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
 
 def main():
     st.set_page_config(
-        page_title="Government AI Workspace", page_icon="💬", layout="wide",
-        initial_sidebar_state="expanded",
+        page_title="Government AI Workspace", page_icon="💬", layout="wide"
     )
-    apply_user_friendly_styles()
     db_path = "database.db"
     init_db(db_path)
     init_chat_tables(db_path)
@@ -602,23 +560,12 @@ def main():
     secret_keys = getattr(llm, "SECRET_KEYS", fallback_keys)
     llm_cfg = llm.load_config(_read_secrets(secret_keys))
 
-    st.markdown(
-        """
-        <section class="gov-hero">
-          <p class="gov-hero-title">🏛️ Government AI Workspace</p>
-          <p class="gov-hero-sub">A simpler place to ask questions, explore official information, and work with documents and data.</p>
-          <span class="gov-chip">💬 AI Assistant</span><span class="gov-chip">📚 Document Search</span>
-          <span class="gov-chip">🔐 Role-based access</span>
-        </section>
-        """,
-        unsafe_allow_html=True,
-    )
     tab1, tab_web, tab_lib, tab2 = st.tabs(
         [
-            "💬 Chat Assistant",
+            "💬 AI Workspace & Chat",
             "🌐 Website Sources",
-            "📚 Document Library",
-            "📊 Data Workbench",
+            "🖼️ Image & PDF Library",
+            "📊 Database Workbench",
         ]
     )
     with tab1:
