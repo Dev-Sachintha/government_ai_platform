@@ -907,49 +907,46 @@ def render_ai_chat_interface(
         active_tid = _create_thread(db_path, username)
         st.session_state["active_thread_id"] = active_tid
 
-    # --- CHAT WORKSPACE CONTROLS ---
-    st.subheader("💬 Ask the Government AI Assistant")
-    st.caption("Ask in natural language. You can attach documents, dictate a question, or enable web search for current information.")
-    with st.expander("⚙️ Assistant settings", expanded=False):
-        h1, h2, h3, h4, h5 = st.columns([2.2, 1.8, 1.3, 1.2, 1.2])
-        with h1:
-            custom_model = st.text_input(
-                "🤖 Model",
-                value=st.session_state.get("override_model", llm_cfg["model"]),
-                help="Switch between fast models (e.g., llama3, gpt-4o-mini) and reasoning models (e.g., o3-mini, deepseek-r1).",
-            )
-            st.session_state["override_model"] = custom_model.strip()
-            active_llm_cfg = dict(llm_cfg, model=custom_model.strip() or llm_cfg["model"])
+    # --- TOP PRODUCTIVITY HEADER BAR ---
+    h1, h2, h3, h4, h5 = st.columns([2.2, 1.8, 1.3, 1.2, 1.2])
+    with h1:
+        custom_model = st.text_input(
+            "🤖 Model",
+            value=st.session_state.get("override_model", llm_cfg["model"]),
+            help="Switch between fast models (e.g., llama3, gpt-4o-mini) and reasoning models (e.g., o3-mini, deepseek-r1).",
+        )
+        st.session_state["override_model"] = custom_model.strip()
+        active_llm_cfg = dict(llm_cfg, model=custom_model.strip() or llm_cfg["model"])
 
-        with h2:
-            persona_name = st.selectbox("🎭 System Persona", list(PERSONAS.keys()))
-        with h3:
-            tone_label = st.selectbox("🎚️ Tone", list(TONE_TEMPS.keys()), index=1)
-            temperature = TONE_TEMPS[tone_label]
-        with h4:
-            st.write("")
-            use_web = st.toggle(
-                "🌐 Web Search", value=False, help="Fetch live web citations"
-            )
-        with h5:
-            st.write("")
-            show_canvas = st.toggle(
-                "🎨 Canvas", value=st.session_state.get("show_canvas", False)
-            )
-            st.session_state["show_canvas"] = show_canvas
+    with h2:
+        persona_name = st.selectbox("🎭 System Persona", list(PERSONAS.keys()))
+    with h3:
+        tone_label = st.selectbox("🎚️ Tone", list(TONE_TEMPS.keys()), index=1)
+        temperature = TONE_TEMPS[tone_label]
+    with h4:
+        st.write("")
+        use_web = st.toggle(
+            "🌐 Web Search", value=False, help="Fetch live web citations"
+        )
+    with h5:
+        st.write("")
+        show_canvas = st.toggle(
+            "🎨 Canvas", value=st.session_state.get("show_canvas", False)
+        )
+        st.session_state["show_canvas"] = show_canvas
 
-        if persona_name == "⚙️ Custom System Persona":
-            custom_sys = st.text_area(
-                "Custom System Instructions",
-                value=st.session_state.get(
-                    "custom_system_prompt", "You are a helpful AI assistant."
-                ),
-                height=68,
-            )
-            st.session_state["custom_system_prompt"] = custom_sys
-            base_persona = custom_sys
-        else:
-            base_persona = PERSONAS[persona_name]
+    if persona_name == "⚙️ Custom System Persona":
+        custom_sys = st.text_area(
+            "Custom System Instructions",
+            value=st.session_state.get(
+                "custom_system_prompt", "You are a helpful AI assistant."
+            ),
+            height=68,
+        )
+        st.session_state["custom_system_prompt"] = custom_sys
+        base_persona = custom_sys
+    else:
+        base_persona = PERSONAS[persona_name]
 
     # Export & Public Share Bar
     messages = _load_messages(db_path, active_tid)
@@ -1038,11 +1035,6 @@ def render_ai_chat_interface(
     with chat_col:
         chat_container = st.container(height=470) if show_canvas else st.container()
         with chat_container:
-            if not messages:
-                st.markdown("### Welcome! How can I help you today?")
-                st.write("You can ask about government services, search your uploaded documents, or request a clear summary or report.")
-                st.caption("Examples: “Summarize this PDF”, “Find information about passport applications”, or “Show a summary of the available records”.")
-                st.info("Tip: Use **Attach Files** to include a document, or choose **Speak** to dictate your question.")
             for idx, msg in enumerate(messages):
                 with st.chat_message(msg["role"]):
                     # Inline prompt editor if user clicked Edit on this message
@@ -1121,7 +1113,7 @@ def render_ai_chat_interface(
                             _render_message_tools(msg["content"], idx)
 
         # --- PROMPT TEMPLATES, ATTACHMENTS, STT & CHAT INPUT ---
-        with st.expander("📎 Add a document or use a prompt template", expanded=False):
+        with st.expander("📎 Attach Files / Images & Prompt Templates", expanded=False):
             t_col, f_col = st.columns([1, 1.3])
             with t_col:
                 chosen_tpl = st.selectbox(
@@ -1140,9 +1132,7 @@ def render_ai_chat_interface(
                     key="chat_drag_drop_files",
                 )
 
-        with st.container(border=True):
-            st.caption("🎙️ Voice input · Choose a language, select Speak, and allow microphone access when your browser asks.")
-            _render_stt_bar(disabled=False)
+        _render_stt_bar(disabled=False)
 
         # Capture STT voice input if submitted
         stt_prompt = st.query_params.get("stt_prompt", "").strip()
@@ -1155,7 +1145,7 @@ def render_ai_chat_interface(
             st.rerun()
 
         typed_prompt = st.chat_input(
-            "Type your question here… (Enter to send)"
+            "Message AI Workspace... (Enter to send, Shift+Enter for new line)"
         )
 
         # Determine active prompt (typed, edited, regenerated, or voice/template)
