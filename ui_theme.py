@@ -96,6 +96,10 @@ button[kind="primary"], button[data-testid="stBaseButton-primary"], button[data-
   box-shadow: var(--ui-shadow); overflow: hidden;
 }
 [data-testid="stChatInput"]:focus-within { border-color: var(--ui-accent) !important; }
+[data-testid="stChatMessageAvatarAssistant"], [data-testid="stChatMessageAvatarAssistant"] img {
+  border-radius: 50% !important; object-fit: cover;
+}
+[data-testid="stChatMessageAvatarAssistant"] { width: 2.6rem; height: 2.6rem; border: 2px solid var(--ui-accent); overflow: hidden; }
 @keyframes uiFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* ---------- Cards: expanders, forms, metrics, alerts ---------- */

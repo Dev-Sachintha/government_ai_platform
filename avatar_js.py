@@ -100,3 +100,146 @@ function getAvatar() {
   return api;
 }
 """
+
+
+# ---------------------------------------------------------------------------
+# Copy / Listen / Stop handler. Installed ONCE per page; it listens for clicks on
+# any button[data-action] inside a [data-gov-tools] block, so it does not matter
+# when Streamlit runs each message's <script>. The message text is read from the
+# block's data-text attribute.
+# ---------------------------------------------------------------------------
+TOOLS_JS = AVATAR_JS + r"""
+(function () {
+  const hosts = [window];
+  try { if (window.parent && window.parent !== window && window.parent.document) hosts.push(window.parent); } catch (e) {}
+
+  function detectLanguage(v) {
+    if (/[\u0D80-\u0DFF]/.test(v)) return 'si-LK';
+    if (/[\u0B80-\u0BFF]/.test(v)) return 'ta-IN';
+    if (/[\u0900-\u097F]/.test(v)) return 'hi-IN';
+    if (/[\u0600-\u06FF]/.test(v)) return 'ar-SA';
+    if (/[\u4E00-\u9FFF]/.test(v)) return 'zh-CN';
+    if (/[\u3040-\u30FF]/.test(v)) return 'ja-JP';
+    if (/[\uAC00-\uD7AF]/.test(v)) return 'ko-KR';
+    if (/[\u0400-\u04FF]/.test(v)) return 'ru-RU';
+    return 'en-US';
+  }
+
+  function cleanForSpeech(t) {
+    return t.replace(/```[\s\S]*?```/g, ' ').replace(/https?:\/\/\S+/g, ' ')
+            .replace(/[#*_`>|~]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Split into short pieces: Chrome silently stops long utterances after ~15 s.
+  function chunkText(t) {
+    const parts = t.match(/[^.!?\u0964\u0DF4\n]+[.!?\u0964\u0DF4]*/g) || [t];
+    const out = []; let cur = '';
+    parts.forEach(function (p) {
+      if ((cur + p).length > 180 && cur) { out.push(cur.trim()); cur = p; } else { cur += p; }
+    });
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+
+  let session = 0;
+
+  function stopSpeech(root) {
+    session++;
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+    try { getAvatar().stop(); } catch (e) {}
+    if (root) setStatus(root, 'Speech stopped.');
+  }
+
+  function setStatus(root, msg) {
+    const el = root && root.querySelector('.gov-status');
+    if (el) el.textContent = msg;
+  }
+
+  function speak(root, text) {
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+      setStatus(root, 'Speech is not supported by this browser. Use Chrome or Edge.');
+      return;
+    }
+    const spoken = cleanForSpeech(text);
+    if (!spoken) { setStatus(root, 'Nothing to read.'); return; }
+    const language = detectLanguage(spoken);
+    const pieces = chunkText(spoken);
+    const mySession = ++session;
+
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+    let avatar = null;
+    try { avatar = getAvatar(); avatar.start(); } catch (e) { avatar = null; }
+    setStatus(root, 'Starting…');
+
+    function pickVoice() {
+      const voices = window.speechSynthesis.getVoices() || [];
+      const base = language.split('-')[0].toLowerCase();
+      return voices.find(function (v) { return v.lang && v.lang.toLowerCase().startsWith(base); }) || null;
+    }
+
+    function next(i) {
+      if (mySession !== session) return;
+      if (i >= pieces.length) {
+        setStatus(root, '');
+        if (avatar) avatar.stop();
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(pieces[i]);
+      u.lang = language; u.rate = 1;
+      const v = pickVoice(); if (v) u.voice = v;
+      u.onstart = function () { if (mySession === session) setStatus(root, 'Speaking (' + language + ')…'); };
+      u.onboundary = function () { if (avatar) avatar.pulse(); };
+      u.onend = function () { next(i + 1); };
+      u.onerror = function (ev) {
+        if (mySession !== session) return;
+        if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
+        setStatus(root, 'Speech error: ' + (ev && ev.error ? ev.error : 'unknown') +
+          (language !== 'en-US' ? ' (is a ' + language + ' voice installed?)' : ''));
+        if (avatar) avatar.stop();
+      };
+      window.speechSynthesis.speak(u);
+      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+    }
+    // Chrome needs a short pause between cancel() and speak().
+    setTimeout(function () { next(0); }, 120);
+  }
+
+  async function copyText(root, text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const f = document.createElement('textarea');
+        f.value = text; f.setAttribute('readonly', '');
+        f.style.position = 'fixed'; f.style.left = '-9999px';
+        document.body.appendChild(f); f.select();
+        const ok = document.execCommand('copy'); f.remove();
+        if (!ok) throw new Error('Clipboard unavailable');
+      }
+      setStatus(root, 'Copied!');
+    } catch (e) { setStatus(root, 'Copy failed — check browser permissions.'); }
+  }
+
+  function onClick(ev) {
+    const t = ev.target;
+    const btn = t && t.closest ? t.closest('button[data-action]') : null;
+    if (!btn) return;
+    const root = btn.closest('[data-gov-tools]');
+    if (!root) return;
+    const action = btn.getAttribute('data-action');
+    const text = root.getAttribute('data-text') || '';
+    try {
+      if (action === 'copy') copyText(root, text);
+      else if (action === 'listen') speak(root, text);
+      else if (action === 'stop') stopSpeech(root);
+    } catch (e) { setStatus(root, 'Error: ' + (e && e.message ? e.message : e)); }
+  }
+
+  hosts.forEach(function (w) {
+    const d = w.document;
+    if (d.__govToolsClick) return;
+    d.__govToolsClick = true;
+    d.addEventListener('click', onClick, true);
+  });
+})();
+"""

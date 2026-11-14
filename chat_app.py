@@ -1,4 +1,5 @@
 import io
+import os
 import json
 import re
 import sqlite3
@@ -617,109 +618,40 @@ def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
 
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
-from avatar_js import AVATAR_JS
+from avatar_js import TOOLS_JS
+
+_PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assistant_profile.jpg")
+ASSISTANT_AVATAR = _PROFILE_PATH if os.path.exists(_PROFILE_PATH) else "🤖"
+
+
+def _avatar_for(role):
+    """Profile picture for chat messages: the character for the assistant, default icon for the user."""
+    return ASSISTANT_AVATAR if role == "assistant" else None
 
 
 def _render_message_tools(text: str, msg_index: int):
-    """Render reliable Copy / Listen / Stop controls for an AI message."""
-    safe_text = json.dumps(text, ensure_ascii=False)
-    root_id = f"message_tools_{msg_index}"
-    status_id = f"message_status_{msg_index}"
-    tools_html = f"""
-    <div id="{root_id}" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:2px; font-family:sans-serif;">
-        <button type="button" data-action="copy" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">📋 Copy</button>
-        <button type="button" data-action="listen" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">🔊 Listen</button>
-        <button type="button" data-action="stop" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">⏹️ Stop</button>
-        <span id="{status_id}" role="status" aria-live="polite" style="font-size:11px; opacity:0.75;"></span>
-    </div>
-    <script>
-    (() => {{
-        const root = document.getElementById({json.dumps(root_id)});
-        if (!root || root.dataset.bound === '1') return;
-        root.dataset.bound = '1';
-        const messageText = {safe_text};
-        const status = root.querySelector('[role="status"]');
-        const setStatus = (value) => {{ if (status) status.textContent = value; }};
-        __AVATAR_JS__
+    """Copy / Listen / Stop controls for an AI message (Listen shows the talking avatar).
 
-        async function copyText() {{
-            try {{
-                if (navigator.clipboard && window.isSecureContext) {{
-                    await navigator.clipboard.writeText(messageText);
-                }} else {{
-                    const field = document.createElement('textarea');
-                    field.value = messageText;
-                    field.setAttribute('readonly', '');
-                    field.style.position = 'fixed';
-                    field.style.left = '-9999px';
-                    document.body.appendChild(field);
-                    field.select();
-                    const copied = document.execCommand('copy');
-                    field.remove();
-                    if (!copied) throw new Error('Clipboard permission unavailable');
-                }}
-                setStatus('Copied!');
-            }} catch (error) {{
-                setStatus('Copy failed — check browser permissions.');
-            }}
-        }}
-
-        function detectLanguage(value) {{
-            if (/[\u0D80-\u0DFF]/.test(value)) return 'si-LK';
-            if (/[\u0B80-\u0BFF]/.test(value)) return 'ta-IN';
-            if (/[\u0900-\u097F]/.test(value)) return 'hi-IN';
-            if (/[\u0600-\u06FF]/.test(value)) return 'ar-SA';
-            if (/[\u4E00-\u9FFF]/.test(value)) return 'zh-CN';
-            if (/[\u3040-\u30FF]/.test(value)) return 'ja-JP';
-            if (/[\uAC00-\uD7AF]/.test(value)) return 'ko-KR';
-            if (/[\u0400-\u04FF]/.test(value)) return 'ru-RU';
-            return 'en-US';
-        }}
-
-        function speakText() {{
-            if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {{
-                setStatus('Speech is not supported by this browser.');
-                return;
-            }}
-            window.speechSynthesis.cancel();
-            const spoken = messageText
-                .replace(/```[\\s\\S]*?```/g, ' ')
-                .replace(/https?:\\/\\/\\S+/g, ' ')
-                .replace(/[#*_`>|~]/g, ' ')
-                .replace(/\\s+/g, ' ').trim();
-            const avatar = getAvatar();
-            const language = detectLanguage(spoken);
-            const utterance = new SpeechSynthesisUtterance(spoken);
-            utterance.lang = language;
-            utterance.rate = 1;
-            utterance.onstart = () => {{ setStatus('Speaking (' + language + ')…'); avatar.start(); }};
-            utterance.onboundary = () => avatar.pulse();
-            utterance.onend = () => {{ setStatus(''); avatar.stop(); }};
-            utterance.onerror = (event) => {{ setStatus('Speech error: ' + event.error); avatar.stop(); }};
-            avatar.start();
-            const voices = window.speechSynthesis.getVoices();
-            const voice = voices.find(item => item.lang && item.lang.toLowerCase().startsWith(language.split('-')[0].toLowerCase()));
-            if (voice) utterance.voice = voice;
-            window.speechSynthesis.speak(utterance);
-            if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-        }}
-
-        root.addEventListener('click', (event) => {{
-            const button = event.target.closest('button[data-action]');
-            if (!button || !root.contains(button)) return;
-            const action = button.dataset.action;
-            if (action === 'copy') copyText();
-            if (action === 'listen') speakText();
-            if (action === 'stop') {{
-                if ('speechSynthesis' in window) window.speechSynthesis.cancel();
-                getAvatar().stop();
-                setStatus('Speech stopped.');
-            }}
-        }});
-    }})();
-    </script>
+    The message text lives in a data-text attribute; a single page-wide click handler
+    (TOOLS_JS) reads it, so the buttons work no matter when Streamlit runs the script.
     """
-    tools_html = tools_html.replace("__AVATAR_JS__", AVATAR_JS)
+    import html as _html
+
+    attr = _html.escape(text, quote=True)
+    btn = (
+        "background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; "
+        "padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;"
+    )
+    tools_html = (
+        f'<div data-gov-tools="1" data-index="{msg_index}" data-text="{attr}" '
+        'style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:2px; font-family:sans-serif;">'
+        f'<button type="button" data-action="copy" style="{btn}">📋 Copy</button>'
+        f'<button type="button" data-action="listen" style="{btn}">🔊 Listen</button>'
+        f'<button type="button" data-action="stop" style="{btn}">⏹️ Stop</button>'
+        '<span class="gov-status" role="status" aria-live="polite" style="font-size:11px; opacity:0.75;"></span>'
+        "</div>"
+        "<script>" + TOOLS_JS + "</script>"
+    )
     st.html(tools_html, unsafe_allow_javascript=True)
 
 
@@ -848,7 +780,7 @@ def render_shared_thread_view(db_path: str, token: str):
     st.subheader(title)
     messages = json.loads(snap_json)
     for idx, m in enumerate(messages):
-        with st.chat_message(m["role"]):
+        with st.chat_message(m["role"], avatar=_avatar_for(m["role"])):
             st.markdown(m["content"])
             if m.get("sql_query"):
                 st.code(m["sql_query"], language="sql")
@@ -1063,7 +995,7 @@ def render_ai_chat_interface(
         chat_container = st.container(height=470) if show_canvas else st.container()
         with chat_container:
             for idx, msg in enumerate(messages):
-                with st.chat_message(msg["role"]):
+                with st.chat_message(msg["role"], avatar=_avatar_for(msg["role"])):
                     # Inline prompt editor if user clicked Edit on this message
                     if st.session_state.get("editing_msg_id") == msg["id"]:
                         edited_txt = st.text_area(
@@ -1249,7 +1181,7 @@ def render_ai_chat_interface(
             full_response = ""
 
             with chat_container:
-                with st.chat_message("assistant"):
+                with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
                     stop_placeholder = st.empty()
                     if stop_placeholder.button(
                         "⏹️ Stop Generating", key="stop_gen_btn"
