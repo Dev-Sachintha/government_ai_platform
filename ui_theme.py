@@ -123,6 +123,30 @@ button[kind="primary"], button[data-testid="stBaseButton-primary"], button[data-
 .ui-login h1 { font-size: 1.7rem; font-weight: 700; margin: 0; padding: 0; letter-spacing: -0.01em; }
 .ui-login p { opacity: .7; margin: 6px 0 0 0; }
 
+
+/* ---------- Background image (served from /static/background.jpg) ---------- */
+.stApp {
+  background:
+    linear-gradient(rgba(8,10,30,0.30), rgba(8,10,30,0.50)),
+    url('/app/static/background.jpg') center center / cover fixed no-repeat !important;
+}
+.block-container {
+  background: rgba(255,255,255,0.90);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.55); border-radius: 26px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.28);
+  padding: 1.6rem 2rem 4rem !important; margin-top: 1rem; margin-bottom: 5rem;
+}
+[data-testid="stSidebar"] > div:first-child {
+  background: rgba(255,255,255,0.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+[data-testid="stBottom"], [data-testid="stBottom"] > div { background: transparent !important; }
+[data-testid="stChatInput"] { background: rgba(255,255,255,0.97) !important; }
+[data-testid="stForm"] { background: rgba(255,255,255,0.94) !important; }
+/* login page: let the picture show through */
+.block-container:has(.ui-login) { background: transparent; border: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.ui-login h1, .ui-login p { color: #fff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.65); opacity: 1; }
+
 /* ---------- Scrollbars ---------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: rgba(128,128,128,0.35); border-radius: 10px; }
