@@ -67,6 +67,13 @@ def _bg_executor() -> ThreadPoolExecutor:
     return ThreadPoolExecutor(max_workers=2)
 
 
+def save_now():
+    """Push the DB to permanent storage right away (after an add / delete / edit)."""
+    cfg = st.session_state.get("persist_cfg")
+    if cfg:
+        persist.maybe_save(cfg, "database.db", force=True)
+
+
 def start_job(name, fn, *args):
     st.session_state.pop(f"result:{name}", None)
     st.session_state[f"job:{name}"] = {
@@ -92,6 +99,7 @@ def poll_job(name, label):
         st.session_state[f"result:{name}"] = (ok, msg)
         st.session_state[f"job:{name}"] = None
         st.session_state["last_active"] = time.time()
+        save_now()
         st.rerun()
     else:
         st.info(f"⏳ {label}... {int(time.time() - job['started'])}s")
@@ -276,8 +284,12 @@ def render_sidebar_controls(db_path, user_role):
                         st.warning(pst["last_error"])
                     elif pst["last_saved"]:
                         st.success(f"Auto-saved at {pst['last_saved']}")
+                        if pst["cloud_summary"]:
+                            st.caption(f"Cloud copy: {pst['cloud_summary']}")
                     else:
                         st.info(pst["restored_msg"] or "Auto-save is on.")
+                        if pst["cloud_summary"]:
+                            st.caption(f"Restored: {pst['cloud_summary']}")
                     if st.button("☁️ Save now", key="persist_save_now"):
                         persist.maybe_save(pcfg, db_path, force=True)
                         st.rerun()
@@ -381,6 +393,7 @@ def render_web_sources_tab(db_path, user_role, username):
                         disabled=busy,
                     ):
                         delete_source(db_path, src["id"], username)
+                        save_now()
                         st.rerun()
 
 
@@ -519,6 +532,7 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                         disabled=busy,
                     ):
                         library.delete_file(db_path, fid, username)
+                        save_now()
                         _item_image.clear()
                         st.rerun()
 
@@ -549,6 +563,7 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                     )
                     if st.button("💾 Save", key=f"lib_save_{fid}"):
                         library.update_file(db_path, fid, new_title, new_desc, username)
+                        save_now()
                         st.rerun()
 
 

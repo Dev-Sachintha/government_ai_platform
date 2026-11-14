@@ -25,7 +25,8 @@ import time
 import requests
 
 API = "https://api.github.com"
-MIN_SECONDS_BETWEEN_UPLOADS = 10
+MIN_SECONDS_BETWEEN_UPLOADS = 8
+MAX_UPLOAD_BYTES = 70 * 1024 * 1024   # GitHub Contents API hard limit is 100 MB
 TIMEOUT = 60
 
 SECRET_KEYS = [
@@ -46,6 +47,7 @@ _state = {
     "last_error": "",
     "restored_msg": "",
     "uploading": False,
+    "cloud_summary": "",
 }
 
 
@@ -114,6 +116,24 @@ def _snapshot_bytes(db_path) -> bytes:
             pass
 
 
+def _summary(db_path) -> str:
+    """Human-readable count of what is inside the DB (shown in the sidebar)."""
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            def n(t):
+                try:
+                    return conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                except sqlite3.Error:
+                    return 0
+            return (f"{n('web_sources')} websites, {n('library_files')} library files, "
+                    f"{n('chat_threads')} chats")
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
 def _valid_sqlite(path) -> bool:
     try:
         conn = sqlite3.connect(path)
@@ -169,6 +189,7 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
             _state["restore_ok"] = True
             _state["last_sig"] = _db_sig(db_path)
             _state["restored_msg"] = "Saved data restored from GitHub."
+            _state["cloud_summary"] = _summary(db_path)
     except Exception as e:  # never block the app; but never overwrite remote after a failed read
         with _lock:
             _state["restore_ok"] = False
@@ -179,6 +200,11 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
 def _upload(cfg, db_path, sig_before):
     try:
         payload = _snapshot_bytes(db_path)
+        if len(payload) > MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"database is {len(payload)/1048576:.0f} MB; GitHub storage limit is about 70 MB. "
+                "Delete large PDFs/images from the Library."
+            )
         sha = None
         meta = requests.get(_url(cfg), headers=_headers(cfg), params={"ref": cfg["branch"]}, timeout=TIMEOUT)
         if meta.status_code == 200:
@@ -198,6 +224,7 @@ def _upload(cfg, db_path, sig_before):
             _state["last_sig"] = sig_before
             _state["last_saved"] = time.strftime("%H:%M:%S UTC", time.gmtime())
             _state["last_error"] = ""
+            _state["cloud_summary"] = f"{_summary(db_path)} · {len(payload)/1048576:.1f} MB"
     except Exception as e:
         with _lock:
             _state["last_error"] = f"Save failed: {e}"
