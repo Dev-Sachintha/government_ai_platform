@@ -101,3 +101,10 @@ One-time setup:
 
 Notes: saving happens a few seconds after any change (use **Save now** to force it). Use a separate data repo,
 never the app repo, or every save would redeploy the app. Keep the repo private: it holds your data.
+
+## Talking avatar (🔊 Listen)
+When you press **🔊 Listen** under an AI answer, a picture panel (`static/avatar.jpg`) pops up in the
+bottom-right corner and the character's mouth moves while the browser reads the answer aloud.
+It hides automatically when the speech ends, or press **⏹ Stop**. To use another face, replace
+`static/avatar.jpg` (720x720) and adjust the mouth numbers (`CX`, `YS`, `SX` ...) in `avatar_js.py`.
+Needs `enableStaticServing = true` in `.streamlit/config.toml` (already set).

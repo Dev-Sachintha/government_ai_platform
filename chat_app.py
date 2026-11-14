@@ -617,6 +617,9 @@ def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
 
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
+from avatar_js import AVATAR_JS
+
+
 def _render_message_tools(text: str, msg_index: int):
     """Render reliable Copy / Listen / Stop controls for an AI message."""
     safe_text = json.dumps(text, ensure_ascii=False)
@@ -637,6 +640,7 @@ def _render_message_tools(text: str, msg_index: int):
         const messageText = {safe_text};
         const status = root.querySelector('[role="status"]');
         const setStatus = (value) => {{ if (status) status.textContent = value; }};
+        __AVATAR_JS__
 
         async function copyText() {{
             try {{
@@ -678,13 +682,21 @@ def _render_message_tools(text: str, msg_index: int):
                 return;
             }}
             window.speechSynthesis.cancel();
-            const language = detectLanguage(messageText);
-            const utterance = new SpeechSynthesisUtterance(messageText);
+            const spoken = messageText
+                .replace(/```[\\s\\S]*?```/g, ' ')
+                .replace(/https?:\\/\\/\\S+/g, ' ')
+                .replace(/[#*_`>|~]/g, ' ')
+                .replace(/\\s+/g, ' ').trim();
+            const avatar = getAvatar();
+            const language = detectLanguage(spoken);
+            const utterance = new SpeechSynthesisUtterance(spoken);
             utterance.lang = language;
             utterance.rate = 1;
-            utterance.onstart = () => setStatus('Speaking (' + language + ')…');
-            utterance.onend = () => setStatus('');
-            utterance.onerror = (event) => setStatus('Speech error: ' + event.error);
+            utterance.onstart = () => {{ setStatus('Speaking (' + language + ')…'); avatar.start(); }};
+            utterance.onboundary = () => avatar.pulse();
+            utterance.onend = () => {{ setStatus(''); avatar.stop(); }};
+            utterance.onerror = (event) => {{ setStatus('Speech error: ' + event.error); avatar.stop(); }};
+            avatar.start();
             const voices = window.speechSynthesis.getVoices();
             const voice = voices.find(item => item.lang && item.lang.toLowerCase().startsWith(language.split('-')[0].toLowerCase()));
             if (voice) utterance.voice = voice;
@@ -700,12 +712,14 @@ def _render_message_tools(text: str, msg_index: int):
             if (action === 'listen') speakText();
             if (action === 'stop') {{
                 if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                getAvatar().stop();
                 setStatus('Speech stopped.');
             }}
         }});
     }})();
     </script>
     """
+    tools_html = tools_html.replace("__AVATAR_JS__", AVATAR_JS)
     st.html(tools_html, unsafe_allow_javascript=True)
 
 
