@@ -139,7 +139,7 @@ header[data-testid="stHeader"] { background: transparent; }
 .stApp:has(.ui-login) {
   background:
     linear-gradient(rgba(5,8,25,0.30), rgba(5,8,25,0.55)),
-    url('/app/static/background.jpg') center 20% / cover fixed no-repeat !important;
+    url('/static/background.jpg') center 20% / cover fixed no-repeat !important;
 }
 .block-container:has(.ui-login) { padding-top: 2rem !important; }
 .ui-login h1, .ui-login p { color: #fff !important; text-shadow: 0 2px 14px rgba(0,0,0,0.7); opacity: 1; }
