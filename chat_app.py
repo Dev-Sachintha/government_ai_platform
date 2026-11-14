@@ -624,9 +624,9 @@ def _render_message_tools(text: str, msg_index: int):
     status_id = f"message_status_{msg_index}"
     tools_html = f"""
     <div id="{root_id}" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:2px; font-family:sans-serif;">
-        <button type="button" data-action="copy" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">📋 Copy</button>
-        <button type="button" data-action="listen" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">🔊 Listen</button>
-        <button type="button" data-action="stop" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">⏹️ Stop</button>
+        <button type="button" data-action="copy" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">📋 Copy</button>
+        <button type="button" data-action="listen" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">🔊 Listen</button>
+        <button type="button" data-action="stop" style="background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;">⏹️ Stop</button>
         <span id="{status_id}" role="status" aria-live="polite" style="font-size:11px; opacity:0.75;"></span>
     </div>
     <script>
@@ -713,7 +713,7 @@ def _render_stt_bar(disabled: bool):
     """Render browser-based multilingual voice dictation controls."""
     disabled_attr = "disabled" if disabled else ""
     stt_html = f"""
-    <div id="sttControls" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:8px; font-family:sans-serif;">
+    <div id="sttControls" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:999px; font-family:Inter,sans-serif;">
         <span style="font-size:12px; font-weight:600;">🎙️ Dictate:</span>
         <select id="sttLang" {disabled_attr} style="padding:4px 6px; border-radius:5px; border:1px solid #888; font-size:12px;">
             <option value="en-US">English (US)</option>
@@ -729,7 +729,7 @@ def _render_stt_bar(disabled: bool):
             <option value="es-ES">Spanish</option>
             <option value="ru-RU">Russian</option>
         </select>
-        <button id="sttBtn" type="button" {disabled_attr} style="background:#ff4b4b; color:white; border:none; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">🎤 Speak</button>
+        <button id="sttBtn" type="button" {disabled_attr} style="background:linear-gradient(120deg,#6366f1,#8b5cf6); color:white; border:none; padding:6px 14px; border-radius:999px; cursor:pointer; font-size:12px; font-weight:600;">🎤 Speak</button>
         <button id="sttStopBtn" type="button" {disabled_attr} style="background:transparent; border:1px solid #888; padding:5px 10px; border-radius:5px; cursor:pointer; font-size:12px;">⏹ Stop</button>
         <span id="sttStatus" role="status" aria-live="polite" style="font-size:12px; opacity:0.8;">Click Speak to dictate</span>
     </div>
@@ -780,17 +780,30 @@ def _render_stt_bar(disabled: bool):
             const transcript = event.results && event.results[0] && event.results[0][0]
                 ? event.results[0][0].transcript.trim() : '';
             if (!transcript) {{ setStatus('No speech detected. Please try again.'); return; }}
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set('stt_prompt', transcript);
-            url.searchParams.set('stt_ts', Date.now().toString());
-            window.parent.location.assign(url.toString());
+            const doc = (window.parent && window.parent.document) || document;
+            const box = doc.querySelector('textarea[data-testid="stChatInputTextArea"]')
+                || doc.querySelector('[data-testid="stChatInput"] textarea');
+            if (!box) {{ setStatus('Chat box not found. Please type your message.'); return; }}
+            const setter = Object.getOwnPropertyDescriptor((box.ownerDocument.defaultView || window).HTMLTextAreaElement.prototype, 'value').set;
+            setter.call(box, transcript);
+            box.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            setStatus('Sending: ' + transcript);
+            setTimeout(() => {{
+                const send = doc.querySelector('[data-testid="stChatInputSubmitButton"]')
+                    || doc.querySelector('[data-testid="stChatInput"] button');
+                if (send && !send.disabled) {{
+                    send.click();
+                }} else {{
+                    box.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
+                }}
+            }}, 150);
         }};
         recognition.onerror = (event) => {{
             setStatus('Microphone error: ' + event.error + '. Check browser permissions.');
         }};
         recognition.onend = () => {{
             listening = false;
-            startButton.style.background = '#ff4b4b';
+            startButton.style.background = 'linear-gradient(120deg,#6366f1,#8b5cf6)';
         }};
     }})();
     </script>

@@ -6,7 +6,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import sqlite3
+import html
 import streamlit as st
+import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
 from db_utils import init_db, is_safe_select, log_event
@@ -216,10 +218,7 @@ def check_password():
     if st.session_state.get("authenticated", False):
         return check_session_timeout()
 
-    st.markdown(
-        "<h1 style='text-align: center;'>🔐 Government AI Reporting Platform</h1>",
-        unsafe_allow_html=True,
-    )
+    ui_theme.render_login_header()
     col1, col2, col3 = st.columns([1, 1.5, 1])
     with col2:
         with st.form("login_form"):
@@ -527,6 +526,7 @@ def main():
     st.set_page_config(
         page_title="Government AI Workspace", page_icon="💬", layout="wide"
     )
+    ui_theme.inject_modern_css()
     db_path = "database.db"
     init_db(db_path)
     init_chat_tables(db_path)
@@ -559,6 +559,8 @@ def main():
     ]
     secret_keys = getattr(llm, "SECRET_KEYS", fallback_keys)
     llm_cfg = llm.load_config(_read_secrets(secret_keys))
+
+    ui_theme.render_hero(html.escape(str(username)), str(user_role))
 
     tab1, tab_web, tab_lib, tab2 = st.tabs(
         [
