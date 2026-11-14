@@ -618,72 +618,102 @@ def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
 def _render_message_tools(text: str, msg_index: int):
-    """One-click Copy + Universal Multi-Language TTS (Listen / Stop)."""
-    safe_text = json.dumps(text)
+    """Render reliable Copy / Listen / Stop controls for an AI message."""
+    safe_text = json.dumps(text, ensure_ascii=False)
+    root_id = f"message_tools_{msg_index}"
+    status_id = f"message_status_{msg_index}"
     tools_html = f"""
-    <div style="display:flex; align-items:center; gap:6px; margin-top:2px; font-family: sans-serif;">
-        <button onclick="copyMsg_{msg_index}()"
-            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
-            📋 Copy
-        </button>
-        <button onclick="speakText_{msg_index}()"
-            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
-            🔊 Listen
-        </button>
-        <button onclick="stopText_{msg_index}()"
-            style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:3px 9px; cursor:pointer; font-size:12px; color:#555;">
-            ⏹️ Stop
-        </button>
-        <span id="status_{msg_index}" style="font-size:11px; color:#888;"></span>
+    <div id="{root_id}" style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:2px; font-family:sans-serif;">
+        <button type="button" data-action="copy" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">📋 Copy</button>
+        <button type="button" data-action="listen" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">🔊 Listen</button>
+        <button type="button" data-action="stop" style="background:transparent; border:1px solid #d0d4dc; border-radius:6px; padding:4px 9px; cursor:pointer; font-size:12px; color:inherit;">⏹️ Stop</button>
+        <span id="{status_id}" role="status" aria-live="polite" style="font-size:11px; opacity:0.75;"></span>
     </div>
     <script>
-        const txt_{msg_index} = {safe_text};
-        function copyMsg_{msg_index}() {{
-            navigator.clipboard.writeText(txt_{msg_index});
-            const s = document.getElementById('status_{msg_index}');
-            s.innerText = 'Copied!';
-            setTimeout(() => s.innerText = '', 1800);
-        }}
-        function detectLang_{msg_index}(str) {{
-            if (/[\\u0D80-\\u0DFF]/.test(str)) return 'si-LK';
-            if (/[\\u0B80-\\u0BFF]/.test(str)) return 'ta-IN';
-            if (/[\\u0900-\\u097F]/.test(str)) return 'hi-IN';
-            if (/[\\u0600-\\u06FF]/.test(str)) return 'ar-SA';
-            if (/[\\u4E00-\\u9FFF]/.test(str)) return 'zh-CN';
-            if (/[\\u3040-\\u30FF]/.test(str)) return 'ja-JP';
-            if (/[\\uAC00-\\uD7AF]/.test(str)) return 'ko-KR';
-            if (/[\\u0400-\\u04FF]/.test(str)) return 'ru-RU';
-            return 'en-US';
-        }}
-        function speakText_{msg_index}() {{
-            if (!('speechSynthesis' in window)) return;
-            window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(txt_{msg_index});
-            const lang = detectLang_{msg_index}(txt_{msg_index});
-            u.lang = lang;
-            const voices = window.speechSynthesis.getVoices();
-            const match = voices.find(v => v.lang.toLowerCase().startsWith(lang.split('-')[0]));
-            if (match) u.voice = match;
-            u.onstart = () => document.getElementById('status_{msg_index}').innerText = 'Speaking (' + lang + ')...';
-            u.onend = () => document.getElementById('status_{msg_index}').innerText = '';
-            window.speechSynthesis.speak(u);
-        }}
-        function stopText_{msg_index}() {{
-            if ('speechSynthesis' in window) {{
-                window.speechSynthesis.cancel();
-                document.getElementById('status_{msg_index}').innerText = '';
+    (() => {{
+        const root = document.getElementById({json.dumps(root_id)});
+        if (!root || root.dataset.bound === '1') return;
+        root.dataset.bound = '1';
+        const messageText = {safe_text};
+        const status = root.querySelector('[role="status"]');
+        const setStatus = (value) => {{ if (status) status.textContent = value; }};
+
+        async function copyText() {{
+            try {{
+                if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(messageText);
+                }} else {{
+                    const field = document.createElement('textarea');
+                    field.value = messageText;
+                    field.setAttribute('readonly', '');
+                    field.style.position = 'fixed';
+                    field.style.left = '-9999px';
+                    document.body.appendChild(field);
+                    field.select();
+                    const copied = document.execCommand('copy');
+                    field.remove();
+                    if (!copied) throw new Error('Clipboard permission unavailable');
+                }}
+                setStatus('Copied!');
+            }} catch (error) {{
+                setStatus('Copy failed — check browser permissions.');
             }}
         }}
+
+        function detectLanguage(value) {{
+            if (/[\u0D80-\u0DFF]/.test(value)) return 'si-LK';
+            if (/[\u0B80-\u0BFF]/.test(value)) return 'ta-IN';
+            if (/[\u0900-\u097F]/.test(value)) return 'hi-IN';
+            if (/[\u0600-\u06FF]/.test(value)) return 'ar-SA';
+            if (/[\u4E00-\u9FFF]/.test(value)) return 'zh-CN';
+            if (/[\u3040-\u30FF]/.test(value)) return 'ja-JP';
+            if (/[\uAC00-\uD7AF]/.test(value)) return 'ko-KR';
+            if (/[\u0400-\u04FF]/.test(value)) return 'ru-RU';
+            return 'en-US';
+        }}
+
+        function speakText() {{
+            if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {{
+                setStatus('Speech is not supported by this browser.');
+                return;
+            }}
+            window.speechSynthesis.cancel();
+            const language = detectLanguage(messageText);
+            const utterance = new SpeechSynthesisUtterance(messageText);
+            utterance.lang = language;
+            utterance.rate = 1;
+            utterance.onstart = () => setStatus('Speaking (' + language + ')…');
+            utterance.onend = () => setStatus('');
+            utterance.onerror = (event) => setStatus('Speech error: ' + event.error);
+            const voices = window.speechSynthesis.getVoices();
+            const voice = voices.find(item => item.lang && item.lang.toLowerCase().startsWith(language.split('-')[0].toLowerCase()));
+            if (voice) utterance.voice = voice;
+            window.speechSynthesis.speak(utterance);
+            if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+        }}
+
+        root.addEventListener('click', (event) => {{
+            const button = event.target.closest('button[data-action]');
+            if (!button || !root.contains(button)) return;
+            const action = button.dataset.action;
+            if (action === 'copy') copyText();
+            if (action === 'listen') speakText();
+            if (action === 'stop') {{
+                if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                setStatus('Speech stopped.');
+            }}
+        }});
+    }})();
     </script>
     """
     st.html(tools_html, unsafe_allow_javascript=True)
 
 
 def _render_stt_bar(disabled: bool):
-    """Multi-language Voice-to-Text dictation bar."""
+    """Render browser-based multilingual voice dictation controls."""
     disabled_attr = "disabled" if disabled else ""
     stt_html = f"""
-    <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:8px; font-family:sans-serif;">
+    <div id="sttControls" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:8px; font-family:sans-serif;">
         <span style="font-size:12px; font-weight:600;">🎙️ Dictate:</span>
         <select id="sttLang" {disabled_attr} style="padding:4px 6px; border-radius:5px; border:1px solid #888; font-size:12px;">
             <option value="en-US">English (US)</option>
@@ -699,47 +729,70 @@ def _render_stt_bar(disabled: bool):
             <option value="es-ES">Spanish</option>
             <option value="ru-RU">Russian</option>
         </select>
-        <button id="sttBtn" {disabled_attr}
-            style="background:#ff4b4b; color:white; border:none; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">
-            🎤 Speak
-        </button>
-        <span id="sttStatus" style="font-size:12px; opacity:0.8;">Click Speak to dictate</span>
+        <button id="sttBtn" type="button" {disabled_attr} style="background:#ff4b4b; color:white; border:none; padding:5px 12px; border-radius:5px; cursor:pointer; font-size:12px; font-weight:600;">🎤 Speak</button>
+        <button id="sttStopBtn" type="button" {disabled_attr} style="background:transparent; border:1px solid #888; padding:5px 10px; border-radius:5px; cursor:pointer; font-size:12px;">⏹ Stop</button>
+        <span id="sttStatus" role="status" aria-live="polite" style="font-size:12px; opacity:0.8;">Click Speak to dictate</span>
     </div>
     <script>
-        const sttBtn = document.getElementById('sttBtn');
-        const sttStatus = document.getElementById('sttStatus');
-        const sttLang = document.getElementById('sttLang');
-        const saved = sessionStorage.getItem('chat_stt_lang');
-        if (saved) sttLang.value = saved;
-        sttLang.onchange = () => sessionStorage.setItem('chat_stt_lang', sttLang.value);
+    (() => {{
+        const root = document.getElementById('sttControls');
+        if (!root || root.dataset.bound === '1') return;
+        root.dataset.bound = '1';
+        const startButton = root.querySelector('#sttBtn');
+        const stopButton = root.querySelector('#sttStopBtn');
+        const status = root.querySelector('#sttStatus');
+        const languageSelect = root.querySelector('#sttLang');
+        const setStatus = (value) => status.textContent = value;
+        try {{
+            const savedLanguage = sessionStorage.getItem('chat_stt_lang');
+            if (savedLanguage) languageSelect.value = savedLanguage;
+            languageSelect.addEventListener('change', () => sessionStorage.setItem('chat_stt_lang', languageSelect.value));
+        }} catch (error) {{ /* Storage may be blocked; dictation still works. */ }}
 
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {{
-            sttBtn.style.display = 'none';
-            sttStatus.innerText = 'Voice dictation requires Chrome or Edge.';
-        }} else {{
-            const rec = new SpeechRecognition();
-            rec.continuous = false;
-            rec.interimResults = false;
-            sttBtn.onclick = () => {{
-                rec.lang = sttLang.value;
-                sttStatus.innerText = 'Listening (' + sttLang.value + ')...';
-                sttBtn.style.background = '#e69500';
-                try {{ rec.start(); }} catch (e) {{}}
-            }};
-            rec.onresult = (e) => {{
-                const transcript = e.results[0][0].transcript;
-                const url = new URL(window.parent.location.href);
-                url.searchParams.set('stt_prompt', transcript);
-                url.searchParams.set('stt_ts', Date.now().toString());
-                window.parent.history.replaceState({{}}, '', url);
-                window.parent.location.reload();
-            }};
-            rec.onerror = (e) => {{
-                sttStatus.innerText = 'Mic error: ' + e.error;
-                sttBtn.style.background = '#ff4b4b';
-            }};
+        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!Recognition) {{
+            startButton.disabled = true;
+            setStatus('Voice dictation is not supported. Use Chrome or Edge.');
+            return;
         }}
+        const recognition = new Recognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        let listening = false;
+        startButton.addEventListener('click', () => {{
+            if (listening) return;
+            recognition.lang = languageSelect.value;
+            try {{
+                recognition.start();
+                listening = true;
+                startButton.style.background = '#e69500';
+                setStatus('Listening (' + recognition.lang + ')…');
+            }} catch (error) {{
+                setStatus('Could not start microphone. Check site microphone permission.');
+            }}
+        }});
+        stopButton.addEventListener('click', () => {{
+            if (listening) recognition.stop();
+            setStatus('Dictation stopped.');
+        }});
+        recognition.onresult = (event) => {{
+            const transcript = event.results && event.results[0] && event.results[0][0]
+                ? event.results[0][0].transcript.trim() : '';
+            if (!transcript) {{ setStatus('No speech detected. Please try again.'); return; }}
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set('stt_prompt', transcript);
+            url.searchParams.set('stt_ts', Date.now().toString());
+            window.parent.location.assign(url.toString());
+        }};
+        recognition.onerror = (event) => {{
+            setStatus('Microphone error: ' + event.error + '. Check browser permissions.');
+        }};
+        recognition.onend = () => {{
+            listening = false;
+            startButton.style.background = '#ff4b4b';
+        }};
+    }})();
     </script>
     """
     st.html(stt_html, unsafe_allow_javascript=True)
