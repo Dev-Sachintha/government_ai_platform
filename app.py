@@ -8,6 +8,7 @@ import pandas as pd
 import sqlite3
 import html
 import streamlit as st
+import persist
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
@@ -262,6 +263,25 @@ def render_sidebar_controls(db_path, user_role):
                 poll_job("ingest", "Ingesting PDFs")
                 show_result("ingest")
 
+                st.subheader("☁️ Permanent storage")
+                pcfg = st.session_state.get("persist_cfg")
+                pst = persist.status()
+                if not pcfg:
+                    st.error(
+                        "Not configured: websites, library files and chats are LOST when the "
+                        "app restarts. Add the PERSIST_GITHUB_* secrets (see README)."
+                    )
+                else:
+                    if pst["last_error"]:
+                        st.warning(pst["last_error"])
+                    elif pst["last_saved"]:
+                        st.success(f"Auto-saved at {pst['last_saved']}")
+                    else:
+                        st.info(pst["restored_msg"] or "Auto-save is on.")
+                    if st.button("☁️ Save now", key="persist_save_now"):
+                        persist.maybe_save(pcfg, db_path, force=True)
+                        st.rerun()
+
                 st.subheader("💾 Backup / Restore DB")
                 if st.button("📦 Prepare backup"):
                     st.session_state["backup_bytes"] = _make_backup_bytes(db_path)
@@ -298,6 +318,11 @@ def render_web_sources_tab(db_path, user_role, username):
     )
     is_admin = user_role == "admin"
     busy = job_running("web")
+    if is_admin and not st.session_state.get("persist_cfg"):
+        st.warning(
+            "⚠️ Permanent storage is not set up, so anything added here disappears when the "
+            "app restarts. Open the sidebar > Session & System Admin > ☁️ Permanent storage."
+        )
 
     if is_admin:
         with st.form("add_web_form", clear_on_submit=True):
@@ -372,6 +397,11 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
     )
     is_admin = user_role == "admin"
     busy = job_running("lib")
+    if is_admin and not st.session_state.get("persist_cfg"):
+        st.warning(
+            "⚠️ Permanent storage is not set up, so anything added here disappears when the "
+            "app restarts. Open the sidebar > Session & System Admin > ☁️ Permanent storage."
+        )
     vision_model = st.session_state.get("vision_model") or llm_cfg["vision_model"]
 
     if is_admin:
@@ -528,8 +558,12 @@ def main():
     )
     ui_theme.inject_modern_css()
     db_path = "database.db"
+    persist_cfg = persist.get_config(_read_secrets(persist.SECRET_KEYS))
+    persist.restore_if_needed(persist_cfg, db_path)   # cold start: bring back saved data
     init_db(db_path)
     init_chat_tables(db_path)
+    persist.maybe_save(persist_cfg, db_path)           # auto-save after any change
+    st.session_state["persist_cfg"] = persist_cfg
 
     # Read-only public share link view (bypasses login for shared snapshots)
     share_token = st.query_params.get("share")

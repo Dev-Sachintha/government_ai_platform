@@ -83,3 +83,21 @@ Groq, OpenRouter, Gemini, OpenAI...), `anthropic` (Claude API). Running locally 
   (even if renamed to .db) is rejected with a message that points you to the Library tab.
 - The chat answers from the best-matching part of each page. Ask with the words the document uses
   (for example *"Trincomalee computer science 2022/2023"*).
+
+## Permanent storage (fixes "websites / library files disappear")
+Streamlit Cloud wipes the app's disk on every restart, sleep or redeploy, so anything added at
+runtime is lost. The app now **auto-saves the database to a private GitHub data repo and restores it on startup**.
+
+One-time setup:
+1. Create a **private** GitHub repository only for data (e.g. `gov-ai-data`) with a README.
+2. GitHub > Settings > Developer settings > *Fine-grained personal access tokens* > create a token for
+   **only that repo** with **Contents: Read and write**.
+3. In Streamlit: *Manage app > Settings > Secrets*, add:
+   ```toml
+   PERSIST_GITHUB_TOKEN = "github_pat_..."
+   PERSIST_GITHUB_REPO  = "your-name/gov-ai-data"
+   ```
+4. Reboot the app. Sidebar > *Session & System Admin* > **Permanent storage** shows "Auto-saved at ...".
+
+Notes: saving happens a few seconds after any change (use **Save now** to force it). Use a separate data repo,
+never the app repo, or every save would redeploy the app. Keep the repo private: it holds your data.
