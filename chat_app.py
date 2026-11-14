@@ -618,7 +618,7 @@ def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
 
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
-from avatar_js import TOOLS_JS
+from voice_ui import render_message_tools as _vui_tools, render_stt_bar as _vui_stt
 
 _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assistant_profile.jpg")
 ASSISTANT_AVATAR = _PROFILE_PATH if os.path.exists(_PROFILE_PATH) else "🤖"
@@ -630,131 +630,13 @@ def _avatar_for(role):
 
 
 def _render_message_tools(text: str, msg_index: int):
-    """Copy / Listen / Stop controls for an AI message (Listen shows the talking avatar).
-
-    The message text lives in a data-text attribute; a single page-wide click handler
-    (TOOLS_JS) reads it, so the buttons work no matter when Streamlit runs the script.
-    """
-    import html as _html
-
-    attr = _html.escape(text, quote=True)
-    btn = (
-        "background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:999px; "
-        "padding:4px 12px; cursor:pointer; font-size:12px; color:inherit;"
-    )
-    tools_html = (
-        f'<div data-gov-tools="1" data-index="{msg_index}" data-text="{attr}" '
-        'style="display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-top:2px; font-family:sans-serif;">'
-        f'<button type="button" data-action="copy" style="{btn}">📋 Copy</button>'
-        f'<button type="button" data-action="listen" style="{btn}">🔊 Listen</button>'
-        f'<button type="button" data-action="stop" style="{btn}">⏹️ Stop</button>'
-        '<span class="gov-status" role="status" aria-live="polite" style="font-size:11px; opacity:0.75;"></span>'
-        "</div>"
-        "<script>" + TOOLS_JS + "</script>"
-    )
-    st.html(tools_html, unsafe_allow_javascript=True)
+    """Copy / Listen / Stop controls for an AI message (Listen shows the talking avatar)."""
+    _vui_tools(text, msg_index)
 
 
 def _render_stt_bar(disabled: bool):
-    """Render browser-based multilingual voice dictation controls."""
-    disabled_attr = "disabled" if disabled else ""
-    stt_html = f"""
-    <div id="sttControls" style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:6px 10px; background:rgba(128,128,128,0.08); border:1px solid rgba(128,128,128,0.2); border-radius:999px; font-family:Inter,sans-serif;">
-        <span style="font-size:12px; font-weight:600;">🎙️ Dictate:</span>
-        <select id="sttLang" {disabled_attr} style="padding:4px 6px; border-radius:5px; border:1px solid #888; font-size:12px;">
-            <option value="en-US">English (US)</option>
-            <option value="si-LK">Sinhala (සිංහල)</option>
-            <option value="ta-IN">Tamil (தமிழ்)</option>
-            <option value="hi-IN">Hindi (हिन्दी)</option>
-            <option value="ar-SA">Arabic (العربية)</option>
-            <option value="zh-CN">Chinese (中文)</option>
-            <option value="ja-JP">Japanese (日本語)</option>
-            <option value="ko-KR">Korean (한국어)</option>
-            <option value="fr-FR">French</option>
-            <option value="de-DE">German</option>
-            <option value="es-ES">Spanish</option>
-            <option value="ru-RU">Russian</option>
-        </select>
-        <button id="sttBtn" type="button" {disabled_attr} style="background:linear-gradient(120deg,#6366f1,#8b5cf6); color:white; border:none; padding:6px 14px; border-radius:999px; cursor:pointer; font-size:12px; font-weight:600;">🎤 Speak</button>
-        <button id="sttStopBtn" type="button" {disabled_attr} style="background:transparent; border:1px solid #888; padding:5px 10px; border-radius:5px; cursor:pointer; font-size:12px;">⏹ Stop</button>
-        <span id="sttStatus" role="status" aria-live="polite" style="font-size:12px; opacity:0.8;">Click Speak to dictate</span>
-    </div>
-    <script>
-    (() => {{
-        const root = document.getElementById('sttControls');
-        if (!root || root.dataset.bound === '1') return;
-        root.dataset.bound = '1';
-        const startButton = root.querySelector('#sttBtn');
-        const stopButton = root.querySelector('#sttStopBtn');
-        const status = root.querySelector('#sttStatus');
-        const languageSelect = root.querySelector('#sttLang');
-        const setStatus = (value) => status.textContent = value;
-        try {{
-            const savedLanguage = sessionStorage.getItem('chat_stt_lang');
-            if (savedLanguage) languageSelect.value = savedLanguage;
-            languageSelect.addEventListener('change', () => sessionStorage.setItem('chat_stt_lang', languageSelect.value));
-        }} catch (error) {{ /* Storage may be blocked; dictation still works. */ }}
-
-        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!Recognition) {{
-            startButton.disabled = true;
-            setStatus('Voice dictation is not supported. Use Chrome or Edge.');
-            return;
-        }}
-        const recognition = new Recognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.maxAlternatives = 1;
-        let listening = false;
-        startButton.addEventListener('click', () => {{
-            if (listening) return;
-            recognition.lang = languageSelect.value;
-            try {{
-                recognition.start();
-                listening = true;
-                startButton.style.background = '#e69500';
-                setStatus('Listening (' + recognition.lang + ')…');
-            }} catch (error) {{
-                setStatus('Could not start microphone. Check site microphone permission.');
-            }}
-        }});
-        stopButton.addEventListener('click', () => {{
-            if (listening) recognition.stop();
-            setStatus('Dictation stopped.');
-        }});
-        recognition.onresult = (event) => {{
-            const transcript = event.results && event.results[0] && event.results[0][0]
-                ? event.results[0][0].transcript.trim() : '';
-            if (!transcript) {{ setStatus('No speech detected. Please try again.'); return; }}
-            const doc = (window.parent && window.parent.document) || document;
-            const box = doc.querySelector('textarea[data-testid="stChatInputTextArea"]')
-                || doc.querySelector('[data-testid="stChatInput"] textarea');
-            if (!box) {{ setStatus('Chat box not found. Please type your message.'); return; }}
-            const setter = Object.getOwnPropertyDescriptor((box.ownerDocument.defaultView || window).HTMLTextAreaElement.prototype, 'value').set;
-            setter.call(box, transcript);
-            box.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            setStatus('Sending: ' + transcript);
-            setTimeout(() => {{
-                const send = doc.querySelector('[data-testid="stChatInputSubmitButton"]')
-                    || doc.querySelector('[data-testid="stChatInput"] button');
-                if (send && !send.disabled) {{
-                    send.click();
-                }} else {{
-                    box.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
-                }}
-            }}, 150);
-        }};
-        recognition.onerror = (event) => {{
-            setStatus('Microphone error: ' + event.error + '. Check browser permissions.');
-        }};
-        recognition.onend = () => {{
-            listening = false;
-            startButton.style.background = 'linear-gradient(120deg,#6366f1,#8b5cf6)';
-        }};
-    }})();
-    </script>
-    """
-    st.html(stt_html, unsafe_allow_javascript=True)
+    """Browser-based multilingual voice dictation (🎤 Speak)."""
+    _vui_stt(disabled)
 
 
 # ------------------------------------------------------------------ Public Share View

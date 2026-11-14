@@ -93,6 +93,7 @@ function getAvatar() {
     onUserStop: null
   };
   wrap.querySelector('button').addEventListener('click', function () {
+    host.__govSession = (host.__govSession || 0) + 1;
     try { host.speechSynthesis.cancel(); } catch (e) {}
     api.stop();
   });
@@ -111,7 +112,13 @@ function getAvatar() {
 TOOLS_JS = AVATAR_JS + r"""
 (function () {
   const hosts = [window];
-  try { if (window.parent && window.parent !== window && window.parent.document) hosts.push(window.parent); } catch (e) {}
+  // Use the parent page's speech engine (shared by every message) when reachable.
+  const SYN = (function () {
+    try { if (window.parent && window.parent !== window && window.parent.speechSynthesis && window.parent.SpeechSynthesisUtterance) return window.parent; } catch (e) {}
+    return window;
+  })();
+  function bump() { SYN.__govSession = (SYN.__govSession || 0) + 1; return SYN.__govSession; }
+  function cur() { return SYN.__govSession || 0; }
 
   function detectLanguage(v) {
     if (/[\u0D80-\u0DFF]/.test(v)) return 'si-LK';
@@ -141,11 +148,9 @@ TOOLS_JS = AVATAR_JS + r"""
     return out;
   }
 
-  let session = 0;
-
   function stopSpeech(root) {
-    session++;
-    try { window.speechSynthesis.cancel(); } catch (e) {}
+    bump();
+    try { SYN.speechSynthesis.cancel(); } catch (e) {}
     try { getAvatar().stop(); } catch (e) {}
     if (root) setStatus(root, 'Speech stopped.');
   }
@@ -156,7 +161,7 @@ TOOLS_JS = AVATAR_JS + r"""
   }
 
   function speak(root, text) {
-    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) {
+    if (!('speechSynthesis' in SYN) || !('SpeechSynthesisUtterance' in SYN)) {
       setStatus(root, 'Speech is not supported by this browser. Use Chrome or Edge.');
       return;
     }
@@ -164,60 +169,61 @@ TOOLS_JS = AVATAR_JS + r"""
     if (!spoken) { setStatus(root, 'Nothing to read.'); return; }
     const language = detectLanguage(spoken);
     const pieces = chunkText(spoken);
-    const mySession = ++session;
+    const mySession = bump();
 
-    try { window.speechSynthesis.cancel(); } catch (e) {}
+    try { SYN.speechSynthesis.cancel(); } catch (e) {}
     let avatar = null;
     try { avatar = getAvatar(); avatar.start(); } catch (e) { avatar = null; }
     setStatus(root, 'Starting…');
 
     function pickVoice() {
-      const voices = window.speechSynthesis.getVoices() || [];
+      const voices = SYN.speechSynthesis.getVoices() || [];
       const base = language.split('-')[0].toLowerCase();
       return voices.find(function (v) { return v.lang && v.lang.toLowerCase().startsWith(base); }) || null;
     }
 
     function next(i) {
-      if (mySession !== session) return;
+      if (mySession !== cur()) return;
       if (i >= pieces.length) {
         setStatus(root, '');
         if (avatar) avatar.stop();
         return;
       }
-      const u = new SpeechSynthesisUtterance(pieces[i]);
+      const u = new SYN.SpeechSynthesisUtterance(pieces[i]);
       u.lang = language; u.rate = 1;
       const v = pickVoice(); if (v) u.voice = v;
-      u.onstart = function () { if (mySession === session) setStatus(root, 'Speaking (' + language + ')…'); };
+      u.onstart = function () { if (mySession === cur()) setStatus(root, 'Speaking (' + language + ')…'); };
       u.onboundary = function () { if (avatar) avatar.pulse(); };
       u.onend = function () { next(i + 1); };
       u.onerror = function (ev) {
-        if (mySession !== session) return;
+        if (mySession !== cur()) return;
         if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
         setStatus(root, 'Speech error: ' + (ev && ev.error ? ev.error : 'unknown') +
           (language !== 'en-US' ? ' (is a ' + language + ' voice installed?)' : ''));
         if (avatar) avatar.stop();
       };
-      window.speechSynthesis.speak(u);
-      if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+      SYN.speechSynthesis.speak(u);
+      if (SYN.speechSynthesis.paused) SYN.speechSynthesis.resume();
     }
     // Chrome needs a short pause between cancel() and speak().
     setTimeout(function () { next(0); }, 120);
   }
 
   async function copyText(root, text) {
+    let ok = false;
     try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(text);
-      } else {
+      if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); ok = true; }
+    } catch (e) { ok = false; }
+    if (!ok) {
+      try {
         const f = document.createElement('textarea');
         f.value = text; f.setAttribute('readonly', '');
         f.style.position = 'fixed'; f.style.left = '-9999px';
         document.body.appendChild(f); f.select();
-        const ok = document.execCommand('copy'); f.remove();
-        if (!ok) throw new Error('Clipboard unavailable');
-      }
-      setStatus(root, 'Copied!');
-    } catch (e) { setStatus(root, 'Copy failed — check browser permissions.'); }
+        ok = document.execCommand('copy'); f.remove();
+      } catch (e) { ok = false; }
+    }
+    setStatus(root, ok ? 'Copied!' : 'Copy failed — select the text and press Ctrl+C.');
   }
 
   function onClick(ev) {
@@ -240,6 +246,74 @@ TOOLS_JS = AVATAR_JS + r"""
     if (d.__govToolsClick) return;
     d.__govToolsClick = true;
     d.addEventListener('click', onClick, true);
+  });
+})();
+"""
+
+
+# ---------------------------------------------------------------------------
+# Dictation (🎤 Speak). Runs inside an iframe; uses the parent page's speech
+# recognition (so the normal microphone prompt appears) and types the result into
+# the parent page's chat box, then presses send. No page reload.
+# ---------------------------------------------------------------------------
+STT_JS = r"""
+(function () {
+  const $ = function (id) { return document.getElementById(id); };
+  const startBtn = $('sttBtn'), stopBtn = $('sttStopBtn'), status = $('sttStatus'), langSel = $('sttLang');
+  function setStatus(v) { status.textContent = v; }
+  const P = (function () { try { if (window.parent && window.parent.document) return window.parent; } catch (e) {} return window; })();
+  try {
+    const saved = P.sessionStorage.getItem('chat_stt_lang');
+    if (saved) langSel.value = saved;
+    langSel.addEventListener('change', function () { try { P.sessionStorage.setItem('chat_stt_lang', langSel.value); } catch (e) {} });
+  } catch (e) {}
+
+  const Rec = P.SpeechRecognition || P.webkitSpeechRecognition || window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Rec) { startBtn.disabled = true; setStatus('Voice dictation is not supported. Use Chrome or Edge.'); return; }
+
+  const GRAD = 'linear-gradient(120deg,#6366f1,#8b5cf6)';
+  let rec = null, listening = false;
+
+  function sendToChat(transcript) {
+    const d = P.document;
+    const box = d.querySelector('textarea[data-testid="stChatInputTextArea"]') || d.querySelector('[data-testid="stChatInput"] textarea');
+    if (!box) { setStatus('Chat box not found. Please type your message.'); return; }
+    const setter = Object.getOwnPropertyDescriptor(P.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(box, transcript);
+    box.dispatchEvent(new P.Event('input', { bubbles: true }));
+    setStatus('Sending: ' + transcript);
+    setTimeout(function () {
+      const send = d.querySelector('[data-testid="stChatInputSubmitButton"]') || d.querySelector('[data-testid="stChatInput"] button');
+      if (send && !send.disabled) send.click();
+      else box.dispatchEvent(new P.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    }, 200);
+  }
+
+  startBtn.addEventListener('click', function () {
+    if (listening) return;
+    try {
+      rec = new Rec();
+      rec.continuous = false; rec.interimResults = false; rec.maxAlternatives = 1;
+      rec.lang = langSel.value;
+      rec.onresult = function (ev) {
+        const t = ev.results && ev.results[0] && ev.results[0][0] ? ev.results[0][0].transcript.trim() : '';
+        if (!t) { setStatus('No speech detected. Please try again.'); return; }
+        sendToChat(t);
+      };
+      rec.onerror = function (ev) { setStatus('Microphone error: ' + ev.error + '. Allow the microphone for this site.'); };
+      rec.onend = function () { listening = false; startBtn.style.background = GRAD; };
+      rec.start();
+      listening = true;
+      startBtn.style.background = '#e69500';
+      setStatus('Listening (' + rec.lang + ')… speak now');
+    } catch (e) {
+      listening = false;
+      setStatus('Could not start the microphone: ' + (e && e.message ? e.message : e));
+    }
+  });
+  stopBtn.addEventListener('click', function () {
+    try { if (rec && listening) rec.stop(); } catch (e) {}
+    setStatus('Dictation stopped.');
   });
 })();
 """

@@ -108,3 +108,8 @@ bottom-right corner and the character's mouth moves while the browser reads the 
 It hides automatically when the speech ends, or press **⏹ Stop**. To use another face, replace
 `static/avatar.jpg` (720x720) and adjust the mouth numbers (`CX`, `YS`, `SX` ...) in `avatar_js.py`.
 Needs `enableStaticServing = true` in `.streamlit/config.toml` (already set).
+
+## Voice buttons (📋 Copy, 🔊 Listen, ⏹️ Stop, 🎤 Speak)
+These are small iframe components (`voice_ui.py`, scripts in `avatar_js.py`), so their JavaScript always runs.
+They use the main page's speech engine / microphone through `window.parent`. Use Chrome or Edge and allow the
+microphone when asked. If something fails, the grey status text next to the buttons shows the reason.
