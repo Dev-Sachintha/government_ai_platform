@@ -26,22 +26,25 @@ html, body, [class*="css"], .stApp, button, input, textarea, select {
 .block-container { padding-top: 1.6rem; padding-bottom: 4rem; max-width: 1280px; }
 header[data-testid="stHeader"] { background: transparent; }
 
-/* ---------- Hero banner ---------- */
+/* ---------- Hero banner: full-width picture ---------- */
 .ui-hero {
-  background: linear-gradient(120deg, var(--ui-accent) 0%, var(--ui-accent-2) 55%, var(--ui-accent-3) 130%);
-  color: #fff; border-radius: 20px; padding: 22px 28px; margin: 0 0 18px 0;
-  box-shadow: var(--ui-shadow); display: flex; align-items: center; gap: 16px;
+  position: relative; display: flex; align-items: center; min-height: 430px;
+  margin: 0 -2rem 28px -2rem; padding: 60px 56px; color: #fff;
+  background:
+    linear-gradient(90deg, rgba(5,8,25,0.78) 0%, rgba(5,8,25,0.40) 42%, rgba(5,8,25,0.05) 75%),
+    url('/app/static/background.jpg') center 22% / cover no-repeat;
 }
-.ui-hero .ui-hero-icon {
-  font-size: 34px; background: rgba(255,255,255,0.18); width: 58px; height: 58px;
-  display: flex; align-items: center; justify-content: center; border-radius: 16px;
-  backdrop-filter: blur(6px);
+.ui-hero .ui-hero-inner { max-width: 620px; }
+.ui-hero .ui-hero-kicker {
+  display: inline-block; font-size: .78rem; font-weight: 700; letter-spacing: .18em;
+  background: rgba(255,255,255,0.16); backdrop-filter: blur(6px);
+  padding: 6px 14px; border-radius: 999px; margin-bottom: 16px;
 }
-.ui-hero h1 { margin: 0; padding: 0; font-size: 1.55rem; font-weight: 700; color: #fff; letter-spacing: -0.01em; }
-.ui-hero p  { margin: 2px 0 0 0; opacity: .88; font-size: .92rem; color: #fff; }
+.ui-hero h1 { margin: 0; padding: 0; font-size: 2.7rem; line-height: 1.1; font-weight: 800; color: #fff; letter-spacing: -0.02em; text-shadow: 0 3px 18px rgba(0,0,0,0.55); }
+.ui-hero p  { margin: 12px 0 0 0; font-size: 1.08rem; color: rgba(255,255,255,0.92); text-shadow: 0 2px 10px rgba(0,0,0,0.6); }
 .ui-hero .ui-chip {
-  margin-left: auto; background: rgba(255,255,255,0.2); padding: 6px 14px; border-radius: 999px;
-  font-size: .8rem; font-weight: 600; white-space: nowrap;
+  position: absolute; right: 32px; bottom: 24px; background: rgba(0,0,0,0.45); backdrop-filter: blur(8px);
+  padding: 8px 16px; border-radius: 999px; font-size: .85rem; font-weight: 600; white-space: nowrap;
 }
 
 /* ---------- Tabs as pills ---------- */
@@ -124,28 +127,22 @@ button[kind="primary"], button[data-testid="stBaseButton-primary"], button[data-
 .ui-login p { opacity: .7; margin: 6px 0 0 0; }
 
 
-/* ---------- Background image (served from /static/background.jpg) ---------- */
-.stApp {
+/* ---------- Page layout ---------- */
+.stApp { background-color: #f3f4fa; }
+.block-container { max-width: 100% !important; padding: 0 2rem 4rem 2rem !important; }
+header[data-testid="stHeader"] { background: transparent; }
+[data-testid="stSidebar"] > div:first-child { background: #ffffff; }
+[data-testid="stChatInput"] { background: #ffffff !important; }
+[data-testid="stForm"] { background: #ffffff !important; }
+
+/* Login page: the picture fills the whole screen */
+.stApp:has(.ui-login) {
   background:
-    linear-gradient(rgba(8,10,30,0.30), rgba(8,10,30,0.50)),
-    url('/app/static/background.jpg') center center / cover fixed no-repeat !important;
+    linear-gradient(rgba(5,8,25,0.30), rgba(5,8,25,0.55)),
+    url('/app/static/background.jpg') center 20% / cover fixed no-repeat !important;
 }
-.block-container {
-  background: rgba(255,255,255,0.90);
-  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.55); border-radius: 26px;
-  box-shadow: 0 12px 40px rgba(0,0,0,0.28);
-  padding: 1.6rem 2rem 4rem !important; margin-top: 1rem; margin-bottom: 5rem;
-}
-[data-testid="stSidebar"] > div:first-child {
-  background: rgba(255,255,255,0.92); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-}
-[data-testid="stBottom"], [data-testid="stBottom"] > div { background: transparent !important; }
-[data-testid="stChatInput"] { background: rgba(255,255,255,0.97) !important; }
-[data-testid="stForm"] { background: rgba(255,255,255,0.94) !important; }
-/* login page: let the picture show through */
-.block-container:has(.ui-login) { background: transparent; border: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
-.ui-login h1, .ui-login p { color: #fff !important; text-shadow: 0 2px 12px rgba(0,0,0,0.65); opacity: 1; }
+.block-container:has(.ui-login) { padding-top: 2rem !important; }
+.ui-login h1, .ui-login p { color: #fff !important; text-shadow: 0 2px 14px rgba(0,0,0,0.7); opacity: 1; }
 
 /* ---------- Scrollbars ---------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -153,9 +150,9 @@ button[kind="primary"], button[data-testid="stBaseButton-primary"], button[data-
 ::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.6); }
 
 @media (max-width: 768px) {
-  .ui-hero { flex-wrap: wrap; padding: 16px; }
-  .ui-hero .ui-chip { margin-left: 0; }
-  .ui-hero h1 { font-size: 1.2rem; }
+  .ui-hero { min-height: 300px; padding: 28px 20px; margin: 0 -1rem 20px -1rem; }
+  .ui-hero h1 { font-size: 1.7rem; }
+  .ui-hero .ui-chip { right: 14px; bottom: 12px; }
 }
 </style>
 """
@@ -167,15 +164,17 @@ def inject_modern_css():
 
 
 def render_hero(username: str = "", role: str = ""):
-    """Gradient header shown at the top of the main workspace."""
+    """Full-width picture banner shown at the top of the main workspace."""
     chip = ""
     if username:
         chip = f"<div class='ui-chip'>👤 {username}" + (f" · {role.title()}" if role else "") + "</div>"
     st.markdown(
         f"""<div class="ui-hero">
-            <div class="ui-hero-icon">🏛️</div>
-            <div><h1>Government AI Workspace</h1>
-            <p>Ask questions, search documents, and explore data with your AI assistant</p></div>
+            <div class="ui-hero-inner">
+              <div class="ui-hero-kicker">🏛️ GOVERNMENT AI PLATFORM</div>
+              <h1>Government AI Workspace</h1>
+              <p>Ask questions, search documents, and explore data with your AI assistant</p>
+            </div>
             {chip}
         </div>""",
         unsafe_allow_html=True,
