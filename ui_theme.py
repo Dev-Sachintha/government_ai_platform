@@ -32,7 +32,7 @@ header[data-testid="stHeader"] { background: transparent; }
   margin: 0 -2rem 28px -2rem; padding: 60px 56px; color: #fff;
   background:
     linear-gradient(90deg, rgba(5,8,25,0.78) 0%, rgba(5,8,25,0.40) 42%, rgba(5,8,25,0.05) 75%),
-    url('/app/static/background.jpg') center 22% / cover no-repeat;
+    var(--gov-bg, url('/app/static/background.jpg')) center 22% / cover no-repeat;
 }
 .ui-hero .ui-hero-inner { max-width: 620px; }
 .ui-hero .ui-hero-kicker {
@@ -143,10 +143,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .stApp:has(.ui-login) {
   background:
     linear-gradient(rgba(5,8,25,0.30), rgba(5,8,25,0.55)),
-    url('/app/static/background.jpg') center 20% / cover fixed no-repeat !important;
+    var(--gov-bg, url('/app/static/background.jpg')) center 20% / cover fixed no-repeat !important;
 }
 .block-container:has(.ui-login) { padding-top: 2rem !important; }
 .ui-login h1, .ui-login p { color: #fff !important; text-shadow: 0 2px 14px rgba(0,0,0,0.7); opacity: 1; }
+
+/* hidden helper component that carries the pictures */
+[data-testid="stElementContainer"]:has(iframe[height="0"]) { position: absolute !important; width: 0 !important; height: 0 !important; overflow: hidden; margin: 0 !important; padding: 0 !important; }
 
 /* ---------- Scrollbars ---------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -165,6 +168,11 @@ header[data-testid="stHeader"] { background: transparent; }
 def inject_modern_css():
     """Inject the global stylesheet (call once per run, right after set_page_config)."""
     st.markdown(_CSS, unsafe_allow_html=True)
+    try:
+        import voice_ui
+        voice_ui.render_assets()
+    except Exception:
+        pass  # pictures are optional; the app still works without them
 
 
 def render_hero(username: str = "", role: str = ""):

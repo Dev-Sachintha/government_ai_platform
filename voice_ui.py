@@ -4,8 +4,13 @@ Why iframes: their <script> always runs and the buttons exist in the iframe's ow
 document, so clicks work on every Streamlit version/host. The scripts reach the main page
 through window.parent (same origin) for the speech engine, the avatar pop-up and the chat box.
 """
+import base64
 import html as _html
+import io
+import json
+import os
 
+import streamlit as st
 import streamlit.components.v1 as components
 
 from avatar_js import STT_JS, TOOLS_JS
@@ -60,3 +65,39 @@ def render_stt_bar(disabled: bool = False):
         "</div><script>" + STT_JS + "</script></body></html>"
     )
     components.html(page, height=54)
+
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+@st.cache_resource(show_spinner=False)
+def _asset_data_uris():
+    """Pictures as data: URIs, so nothing depends on Streamlit's static-file serving."""
+    from PIL import Image
+
+    def uri(name, width, quality):
+        path = os.path.join(_HERE, "static", name)
+        if not os.path.exists(path):
+            return ""
+        im = Image.open(path).convert("RGB")
+        if im.width > width:
+            im = im.resize((width, int(im.height * width / im.width)), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=quality, optimize=True)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return {"bg": uri("background.jpg", 1280, 72), "avatar": uri("avatar.jpg", 720, 72)}
+
+
+def render_assets():
+    """Hidden component: hands the pictures to the main page (talking avatar + banner background)."""
+    uris = _asset_data_uris()
+    script = (
+        "(function(){var P;try{P=(window.parent&&window.parent.document)?window.parent:window;}catch(e){P=window;}"
+        "var A=" + json.dumps(uris["avatar"]) + ",B=" + json.dumps(uris["bg"]) + ";"
+        "if(A)P.__govAvatarSrc=A;"
+        "if(B){var d=P.document,s=d.getElementById('gov-assets-style');"
+        "if(!s){s=d.createElement('style');s.id='gov-assets-style';d.head.appendChild(s);}"
+        "s.textContent=':root{--gov-bg:url(\\''+B+'\\')}';}})();"
+    )
+    components.html("<!doctype html><html><body><script>" + script + "</script></body></html>", height=0)

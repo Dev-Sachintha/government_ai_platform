@@ -46,7 +46,16 @@ function getAvatar() {
     ready = true;
     draw(0);
   };
-  img.src = host.location.origin + '/app/static/avatar.jpg';
+  const FALLBACK = host.location.origin + '/app/static/avatar.jpg';
+  let tried = 0;
+  function loadImage() {
+    // Preferred: picture embedded in the page by the assets component (no static file needed).
+    const src = tried === 0 ? (host.__govAvatarSrc || FALLBACK) : (tried === 1 ? FALLBACK : (host.__govAvatarSrc || ''));
+    if (!src) return;
+    img.src = src;
+  }
+  img.onerror = function () { tried++; if (tried < 3) host.setTimeout(loadImage, tried === 2 ? 800 : 0); };
+  loadImage();
 
   function draw(m) {
     if (!ready) return;
@@ -79,6 +88,7 @@ function getAvatar() {
   const api = {
     start: function () {
       host.clearTimeout(hideTimer);
+      if (!ready) { tried = 0; loadImage(); }
       speaking = true;
       wrap.style.display = 'block';
       host.requestAnimationFrame(function () { wrap.style.opacity = '1'; wrap.style.transform = 'none'; });
