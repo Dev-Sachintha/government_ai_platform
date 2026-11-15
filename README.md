@@ -113,3 +113,8 @@ Needs `enableStaticServing = true` in `.streamlit/config.toml` (already set).
 These are small iframe components (`voice_ui.py`, scripts in `avatar_js.py`), so their JavaScript always runs.
 They use the main page's speech engine / microphone through `window.parent`. Use Chrome or Edge and allow the
 microphone when asked. If something fails, the grey status text next to the buttons shows the reason.
+
+## Advanced Maths links
+Website Sources tab > **📐 Advanced Maths links (one-click)** adds a ready-made list of maths websites
+(MathWorld, Encyclopedia of Mathematics, Paul's Online Math Notes, MIT OCW, LibreTexts, Wikipedia topic pages ...).
+Edit the list in `math_links.py`. Sites that block automated reading are reported and skipped.

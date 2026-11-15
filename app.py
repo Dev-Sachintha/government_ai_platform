@@ -22,6 +22,7 @@ from chat_app import (
     render_shared_thread_view,
     render_sidebar_threads,
 )
+from math_links import MATH_LINKS, add_many_sources
 from web_sources import add_or_refresh_source, delete_source, list_sources, validate_url
 
 TIMEOUT_SECONDS = 300
@@ -349,7 +350,23 @@ def render_web_sources_tab(db_path, user_role, username):
             else:
                 start_job("web", add_or_refresh_source, db_path, result, username)
                 st.rerun()
-        poll_job("web", "Fetching website")
+        with st.expander("📐 Advanced Maths links (one-click)", expanded=False):
+            st.caption(
+                "Ready-made list of advanced-mathematics websites. Pick the ones you want and the AI "
+                "will read them when you ask maths questions in the chat."
+            )
+            labels = {f"{g} · {t}": u for g, t, u in MATH_LINKS}
+            chosen = st.multiselect(
+                "Maths websites",
+                options=list(labels.keys()),
+                default=list(labels.keys()),
+                key="math_links_pick",
+            )
+            if st.button("➕ Add selected Maths websites", disabled=busy or not chosen, key="math_links_add"):
+                start_job("web", add_many_sources, db_path, [labels[c] for c in chosen], username)
+                st.rerun()
+            st.caption("Fetching many sites can take a minute or two. The result appears below.")
+        poll_job("web", "Fetching website(s)")
         show_result("web")
     else:
         st.info(
