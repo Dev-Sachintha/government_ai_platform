@@ -118,3 +118,10 @@ microphone when asked. If something fails, the grey status text next to the butt
 Website Sources tab > **📐 Advanced Maths links (one-click)** adds a ready-made list of maths websites
 (MathWorld, Encyclopedia of Mathematics, Paul's Online Math Notes, MIT OCW, LibreTexts, Wikipedia topic pages ...).
 Edit the list in `math_links.py`. Sites that block automated reading are reported and skipped.
+
+## HoloMotion 3D tab (🖐️ gesture-controlled 3D models)
+Added from the HoloMotion 3D project by G. Charan Teja (MIT licence, see `holomotion/LICENSE`).
+Open the **🖐️ HoloMotion 3D** tab, click **▶ Launch**, then **Start with camera** and allow the webcam.
+It is served by Streamlit's component server from the `holomotion/` folder (no npm build needed).
+Hand tracking runs in the browser; the MediaPipe engine is loaded from jsDelivr (needs internet).
+Use Chrome or Edge. The viewer is only started when you click Launch, so it does not slow the rest of the app.
