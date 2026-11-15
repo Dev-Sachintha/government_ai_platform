@@ -3,6 +3,7 @@
 // out, two hands = zoom, snap = dissolve. Plus quiz, voice, cut-away, recording, beating heart / breathing lungs.
 // MediaPipe (hands) + WebGL2 (GPU particles via transform feedback) + procedural models.
 import { CATALOG, isMachine, buildModel } from './models/catalog.js';
+import { loadExternalModelFile } from './models/externalLoader.js';
 import { Controller } from './logic/controller.js';
 import { OPEN, FIST, PEACE, POINT, NONE } from './logic/gestures.js';
 import { IDLE, SPHERE, FORMED, DISSOLVE, SIM } from './logic/state.js';
@@ -48,7 +49,13 @@ class ModelStore {
     } catch (e) { this.worker = null; }
   }
   get(i) { const m = this.cache.get(i); if (m) this.touch(i); return m || null; }
-  touch(i) { this.lru = [i, ...this.lru.filter((k) => k !== i)]; while (this.lru.length > 6) this.cache.delete(this.lru.pop()); }
+  touch(i) {
+    this.lru = [i, ...this.lru.filter((k) => k !== i)];
+    while (this.lru.length > 6) {
+      const evict = this.lru.pop();
+      if (CATALOG[evict]?.category !== 'Custom') this.cache.delete(evict);
+    }
+  }
   request(i) {
     if (this.cache.has(i)) return Promise.resolve(this.cache.get(i));
     if (this.pending.has(i)) return this.pending.get(i).promise;
@@ -672,6 +679,49 @@ class App {
     this.autoFormAt = autoForm ? this.t + 1.0 : null;
   }
 
+  async loadCustomFile(file) {
+    if (!file) return;
+    this.toast(`⏳ Sampling ${file.name}…`);
+    try {
+      const idx = CATALOG.length;
+      const model = await loadExternalModelFile(file, CFG.n, idx);
+      CATALOG.push(model.def);
+      this.ctl.state.n = CATALOG.length;
+
+      // Cache directly in ModelStore so the worker isn't needed for uploaded files
+      this.store.cache.set(idx, model);
+      this.store.touch(idx);
+
+      // Ensure the "Custom" tab exists in the bottom catalog bar
+      if (!this.tabs['Custom']) {
+        const tab = document.createElement('button');
+        tab.className = 'tab';
+        tab.dataset.cat = 'Custom';
+        tab.addEventListener('click', () => this.showCategory('Custom'));
+        this.$('catTabs').appendChild(tab);
+        this.tabs['Custom'] = tab;
+      }
+      const customCount = CATALOG.filter((d) => d.category === 'Custom').length;
+      this.tabs['Custom'].textContent = `Custom · ${customCount}`;
+
+      // Add model chip
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.dataset.index = idx;
+      chip.dataset.cat = 'Custom';
+      chip.innerHTML = `<i style="color:${rgbCss(model.def.color)};background:${rgbCss(model.def.color)}"></i>${model.def.name}`;
+      chip.addEventListener('click', () => this.selectModel(idx));
+      this.$('catChips').appendChild(chip);
+      this.chips[idx] = chip;
+
+      this.selectModel(idx, true);
+      this.toast(`✨ Loaded ${model.def.name}`);
+    } catch (err) {
+      console.error(err);
+      this.toast(`❌ ${err.message}`);
+    }
+  }
+
   bindInput() {
     const $ = this.$, ctl = this.ctl;
     const now = () => this.t;
@@ -715,6 +765,13 @@ class App {
       else ctl.keyPose(OPEN, now());
     };
     $('bNext').onclick = () => { this.stopDemo(); ctl.keyPose(PEACE, now()); };
+    const uploadInput = $('modelUpload');
+    $('bUpload').onclick = () => uploadInput.click();
+    uploadInput.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (file) this.loadCustomFile(file);
+      uploadInput.value = '';
+    };
     $('bLabels').onclick = () => this.toggle('labelsOn', 'bLabels');
     $('bRotate').onclick = () => this.toggle('autoRotate', 'bRotate');
     $('bHandRot').onclick = () => this.toggle('handRotate', 'bHandRot');
