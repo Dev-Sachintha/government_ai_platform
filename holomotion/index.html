@@ -1,172 +1,178 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>HoloMotion — GPU Particle & 3D Model Stage</title>
-  <style>
-    :root {
-      --bg: #050811;
-      --panel: rgba(13, 20, 38, 0.84);
-      --border: rgba(56, 189, 248, 0.28);
-      --accent: #38bdf8;
-      --accent-hover: #0284c7;
-      --text: #f1f5f9;
-      --muted: #94a3b8;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      overflow: hidden;
-      height: 100vh;
-      width: 100vw;
-    }
-    #viewport {
-      width: 100%;
-      height: 100%;
-      display: block;
-    }
-    .hud-panel {
-      position: fixed;
-      top: 20px;
-      left: 20px;
-      width: 310px;
-      background: var(--panel);
-      backdrop-filter: blur(12px);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-      z-index: 10;
-    }
-    .hud-header h1 {
-      font-size: 1.05rem;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      color: var(--accent);
-    }
-    .hud-header p {
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-top: 2px;
-    }
-    .control-group {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-    label {
-      font-size: 0.78rem;
-      font-weight: 500;
-      color: var(--muted);
-    }
-    select, button {
-      width: 100%;
-      padding: 9px 12px;
-      border-radius: 8px;
-      font-size: 0.85rem;
-      font-family: inherit;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    select {
-      background: #0f172a;
-      color: var(--text);
-      border: 1px solid var(--border);
-    }
-    .btn-primary {
-      background: var(--accent);
-      color: #030712;
-      font-weight: 600;
-      border: none;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-    }
-    .btn-primary:hover {
-      background: var(--accent-hover);
-      color: #fff;
-    }
-    .btn-secondary {
-      background: rgba(239, 68, 68, 0.15);
-      color: #fca5a5;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      font-size: 0.78rem;
-      padding: 6px 10px;
-    }
-    .btn-secondary:hover {
-      background: rgba(239, 68, 68, 0.28);
-    }
-    .fact-box {
-      font-size: 0.76rem;
-      line-height: 1.4;
-      color: #cbd5e1;
-      background: rgba(15, 23, 42, 0.65);
-      padding: 8px 10px;
-      border-radius: 6px;
-      border-left: 2px solid var(--accent);
-    }
-    .status-bar {
-      font-size: 0.75rem;
-      color: var(--muted);
-      padding-top: 6px;
-      border-top: 1px solid rgba(255,255,255,0.08);
-      display: flex;
-      justify-content: space-between;
-    }
-    .hidden { display: none !important; }
-  </style>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
-      }
-    }
-  </script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Holomotion 3D</title>
+  <meta name="description" content="Gesture-controlled 3D wonders, engines and cars made of glowing GPU particles.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%2366e0ff' stroke-width='4'/%3E%3Ccircle cx='32' cy='32' r='8' fill='%23ffd166'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <canvas id="viewport"></canvas>
+  <canvas id="gl" aria-label="Particle scene"></canvas>
+  <canvas id="overlay" aria-hidden="true"></canvas>
+  <video id="cam" playsinline muted></video>
 
-  <aside class="hud-panel">
-    <div class="hud-header">
-      <h1>HOLOMOTION</h1>
-      <p>Surface-Sampled GPU Particle Engine</p>
+  <header class="brand">
+    <div class="logo" aria-hidden="true"><span></span></div>
+    <div>
+      <div class="brand-name">Holomotion 3D</div>
+      <div class="brand-sub">Control the 3D world with your hands.</div>
     </div>
+  </header>
 
-    <div class="control-group">
-      <label for="model-select">Active Hologram Model</label>
-      <select id="model-select"></select>
-    </div>
+  <aside id="panel" class="panel glass">
+    <section class="now">
+      <div class="cat" id="cat">Wonders</div>
+      <h1 id="name">Turtle Tower</h1>
+      <p id="fact" class="fact"></p>
+    </section>
 
-    <div class="control-group">
-      <button id="add-model-btn" class="btn-primary" type="button">
-        <span>+ Add External 3D Model (.glb, .obj, .stl)</span>
-      </button>
-      <input
-        id="model-file-input"
-        type="file"
-        accept=".glb,.obj,.stl"
-        class="hidden"
-      />
-      <button id="remove-model-btn" class="btn-secondary hidden" type="button">
-        Remove Custom Model
-      </button>
-    </div>
+    <section class="status">
+      <div class="row">
+        <span class="k">Scene</span><span id="statePill" class="pill" data-state="idle">idle</span>
+      </div>
+      <div class="row">
+        <span class="k">Hand</span><span id="posePill" class="pill pose">no hand</span>
+      </div>
+      <div class="meter">
+        <div class="meter-head"><span class="k">Hand openness</span><b id="openPct">0%</b></div>
+        <div class="bar"><i id="openBar"></i></div>
+      </div>
+      <div id="explodeBox" class="meter explode" hidden>
+        <div class="meter-head"><span class="k">Exploded view</span><b id="explodePct">0%</b></div>
+        <input id="explodeSlider" type="range" min="0" max="100" value="0" aria-label="Exploded view amount">
+        <div class="hint">Open your hand to pull it apart · close it to assemble</div>
+      </div>
+    </section>
 
-    <div id="model-fact" class="fact-box">Select or upload a 3D model.</div>
+    <section>
+      <div class="k">Gestures</div>
+      <ul id="guide" class="guide"></ul>
+    </section>
 
-    <div class="status-bar">
-      <span id="status-text">Ready</span>
-      <span id="particle-count">15,000 pts</span>
-    </div>
+    <section class="buttons">
+      <button id="bSnap" title="Space">🫰 Snap</button>
+      <button id="bForm" title="F">✊ Form</button>
+      <button id="bOpen" title="O">✋ Release</button>
+      <button id="bNext" title="V / →">✌ Next</button>
+    </section>
   </aside>
 
-  <script type="module" src="./src/app.js"></script>
+  <div id="bigTitle" class="big-title"><div class="t"></div><div class="s"></div></div>
+
+  <nav id="catalog" class="catalog glass" aria-label="Models">
+    <div id="catTabs" class="tabs" role="tablist"></div>
+    <div id="catChips" class="chips"></div>
+  </nav>
+
+  <section id="partCard" class="part-card glass" hidden aria-live="polite">
+    <div class="phead"><i class="swatch"></i><span class="pname"></span><button id="partClose" class="x" title="Close (Esc)">✕</button></div>
+    <div class="pinfo"></div>
+    <div class="pmodel"></div>
+    <div class="pactions"><button id="partPull">🤏 Pull out</button><button id="partSpeak">🔊 Read aloud</button></div>
+    <div class="phint">Point ☝ at another part · pinch 🤏 to pull this one out</div>
+  </section>
+
+  <section id="quiz" class="quiz glass" hidden aria-live="polite">
+    <div class="q"></div><div class="qs"></div><div class="qf"></div>
+    <button id="quizStop" class="x" title="Stop quiz (Q)">✕</button>
+  </section>
+
+  <div class="top-right">
+    <div id="stats" class="stats glass"></div>
+    <div class="icons">
+      <button id="bCam" class="icon" title="Camera on/off (C)">📷</button>
+      <button id="bLabels" class="icon on" title="Part labels (L)">🏷️</button>
+      <button id="bRotate" class="icon on" title="Auto-rotate (R)">⟳</button>
+      <button id="bHandRot" class="icon on" title="Hand rotation: twist your hand to turn the model (G)">🔄</button>
+      <button id="bCut" class="icon" title="Cut-away cross-section (X)">✂</button>
+      <button id="bQuiz" class="icon" title="Quiz: find the part (Q)">🎓</button>
+      <button id="bVoice" class="icon" title="Voice commands + read aloud (M)">🎤</button>
+      <button id="bRec" class="icon" title="Record a video (K)">⏺</button>
+      <button id="bDemo" class="icon" title="Play demo (D)">▶</button>
+      <button id="bScan" class="icon" title="Scan: point the camera at a real object, then press to identify it">🔍</button>
+      <button id="bAdd" class="icon" title="Add your own 3D model (.glb .gltf .obj .stl .ply) — or drop a file anywhere">➕</button>
+      <button id="bOrient" class="icon" title="Rotate the orientation of your model" hidden>🧭</button>
+      <button id="bClearMine" class="icon" title="Remove all models I added">🗑</button>
+      <button id="bHelp" class="icon" title="Keyboard help (H)">?</button>
+      <input id="modelFile" type="file" accept=".glb,.gltf,.obj,.stl,.ply" multiple hidden>
+    </div>
+  </div>
+
+  <div id="scanPanel" class="glass" hidden>
+    <button id="scanClose" class="scan-x" title="Close">✕</button>
+    <div class="scan-head"><img id="scanThumb" alt="" hidden><div><div id="scanName" class="scan-name"></div><div id="scanMeta" class="scan-meta"></div></div></div>
+    <div id="scanBadge" class="scan-badge"></div>
+    <p id="scanText"></p>
+    <ul id="scanFacts"></ul>
+    <a id="scanLink" target="_blank" rel="noopener noreferrer" hidden>🔗 More information</a>
+    <button id="scanView" class="scan-view" hidden>👁 View 3D model</button>
+  </div>
+  <div id="help" class="help glass" hidden>
+    <h2>Controls</h2>
+    <table>
+      <tr><td><kbd>Space</kbd></td><td>Snap — summon / dissolve</td></tr>
+      <tr><td><kbd>F</kbd> / <kbd>O</kbd></td><td>Fist (form) / Open hand (release)</td></tr>
+      <tr><td><kbd>V</kbd> <kbd>→</kbd> <kbd>←</kbd></td><td>Next / previous model</td></tr>
+      <tr><td><kbd>E</kbd> <kbd>↑</kbd> <kbd>↓</kbd> wheel</td><td>Exploded view (engines &amp; car)</td></tr>
+      <tr><td>twist hand</td><td>Rotate the model (raise / lower = tilt) · <kbd>G</kbd> on/off</td></tr>
+      <tr><td>☝ point · 🤏 pinch</td><td>Pick a part (or click it) · pull it out</td></tr>
+      <tr><td>🙌 two hands</td><td>Zoom (also <kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd>, ctrl + wheel)</td></tr>
+      <tr><td><kbd>X</kbd> <kbd>,</kbd> <kbd>.</kbd></td><td>Cut-away slice (move hand / mouse)</td></tr>
+      <tr><td><kbd>Q</kbd> <kbd>M</kbd> <kbd>K</kbd> <kbd>I</kbd></td><td>Quiz · voice · record video · describe part</td></tr>
+      <tr><td>➕ / drop a file</td><td>Add your own 3D model (.glb .gltf .obj .stl .ply) · 🧭 fixes its orientation</td></tr>
+      <tr><td>drag</td><td>Rotate the model</td></tr>
+      <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>T</kbd></td><td>Auto-rotate · labels · trails</td></tr>
+      <tr><td><kbd>C</kbd> <kbd>D</kbd> <kbd>H</kbd></td><td>Camera · demo · this help</td></tr>
+    </table>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <div id="start" class="start">
+    <div class="start-card glass">
+      <div class="logo big" aria-hidden="true"><span></span></div>
+      <h1>Holomotion 3D</h1>
+      <p>Glowing 3D wonders, the human body (brain, beating heart, breathing lungs, eye, ear, skeleton…), DNA, a cell, engines, vehicles and machines made of up to a quarter-million light particles — controlled by your hand in front of the webcam.</p>
+      <ol class="steps">
+        <li><b>Snap</b> your fingers to summon the particles.</li>
+        <li>Make a <b>fist</b> to form a wonder, engine or car.</li>
+        <li><b>Open</b> your hand: wonders morph to the next one — organs, engines and the car <b>explode</b> to show every part inside, named with what it does. Close your hand to put it back together.</li>
+        <li><b>Twist</b> your hand to turn the model, raise or lower it to tilt; <b>two hands</b> zoom.</li>
+        <li><b>Point</b> ☝ at a part to learn what it does, <b>pinch</b> 🤏 to pull it out. Try the 🎓 quiz, 🎤 voice, ✂ cut-away and ⏺ recording.</li>
+        <li>Show <b>✌</b> to jump to the next model.</li>
+      </ol>
+      <div class="start-buttons">
+        <button id="bStartCam" class="primary">Start with camera</button>
+        <button id="bStartNoCam">Continue without camera</button>
+      </div>
+      <p id="startMsg" class="start-msg"></p>
+    </div>
+  </div>
+
+  <!-- Streamlit component bootstrap: tells Streamlit we are ready and how tall the frame should be. -->
+  <button id="bFull" title="Fullscreen" style="position:fixed;left:12px;bottom:12px;z-index:50;background:rgba(10,16,40,.7);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:999px;padding:6px 12px;cursor:pointer;font-size:12px">⛶ Fullscreen</button>
+  <script>
+    (function () {
+      function send(type, data) { try { window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*"); } catch (e) {} }
+      send("streamlit:componentReady", { apiVersion: 1 });
+      // Two-way link with Python: window.holoSend(value) -> Streamlit, "holo-args" <- Streamlit (render args).
+      window.holoSend = function (value) { send("streamlit:setComponentValue", { value: value, dataType: "json" }); };
+      window.addEventListener("message", function (e) {
+        if (e.data && e.data.type === "streamlit:render") {
+          window.__holoArgs = e.data.args || {};
+          window.dispatchEvent(new CustomEvent("holo-args", { detail: window.__holoArgs }));
+        }
+      });
+      send("streamlit:setFrameHeight", { height: 780 });
+      document.getElementById("bFull").addEventListener("click", function () {
+        var el = document.documentElement;
+        if (document.fullscreenElement) document.exitFullscreen();
+        else if (el.requestFullscreen) el.requestFullscreen();
+      });
+    })();
+  </script>
+  <script type="module" src="src/app.js"></script>
 </body>
 </html>
