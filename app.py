@@ -23,6 +23,7 @@ from chat_app import (
     render_sidebar_threads,
 )
 from holomotion_tab import render_holomotion_tab
+from scan_ui import render_scan_tab
 from math_links import MATH_LINKS, add_many_sources
 from web_sources import add_or_refresh_source, delete_source, list_sources, validate_url
 
@@ -629,11 +630,12 @@ def main():
 
     ui_theme.render_hero(html.escape(str(username)), str(user_role))
 
-    tab1, tab_web, tab_lib, tab_holo, tab2 = st.tabs(
+    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2 = st.tabs(
         [
             "💬 AI Workspace & Chat",
             "🌐 Website Sources",
             "🖼️ Image & PDF Library",
+            "📷 Scan",
             "🖐️ HoloMotion 3D",
             "📊 Database Workbench",
         ]
@@ -644,8 +646,11 @@ def main():
         render_web_sources_tab(db_path, user_role, username)
     with tab_lib:
         render_library_tab(db_path, user_role, username, llm_cfg)
+    _vision_model = st.session_state.get("vision_model") or llm_cfg["vision_model"]
+    with tab_scan:
+        render_scan_tab(db_path, user_role, username, llm_cfg, _vision_model, on_change=save_now)
     with tab_holo:
-        render_holomotion_tab()
+        render_holomotion_tab(db_path, llm_cfg, _vision_model, on_change=save_now)
     with tab2:
         st.header("📊 Database Workbench")
         st.info("Run read-only SELECT queries against the database.")

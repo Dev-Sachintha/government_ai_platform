@@ -125,3 +125,22 @@ Open the **🖐️ HoloMotion 3D** tab, click **▶ Launch**, then **Start with 
 It is served by Streamlit's component server from the `holomotion/` folder (no npm build needed).
 Hand tracking runs in the browser; the MediaPipe engine is loaded from jsDelivr (needs internet).
 Use Chrome or Edge. The viewer is only started when you click Launch, so it does not slow the rest of the app.
+
+## Add your own 3D model (HoloMotion tab)
+In the HoloMotion viewer press **➕** (or drag a file onto the viewer) and pick a **.glb, .gltf, .obj, .stl or .ply** file.
+It is turned into glowing particles and appears under the **My Models** tab; use the normal gestures with it.
+- **🧭** rotates the orientation if the model lies on its side (CAD/STL files are usually Z-up).
+- **🗑** removes all models you added. Added models are remembered in your browser (IndexedDB), not on the server.
+- Colours are kept when the file has vertex colours or material colours. glTF with Draco/Meshopt compression or an
+  external .bin file is not supported: export a plain .glb.
+
+## 📷 Scan (object -> AI -> information)
+* **📷 Scan tab:** take a photo with the camera (or upload one) and press **Scan**. The AI vision model identifies the
+  main object and the information comes up. Needs a model that can read pictures (`LLM_VISION_MODEL`; the Claude and
+  most OpenAI-compatible models can; for Ollama use `llava`).
+* **Admins add things one by one** in the same tab (🛠️ Admin: scan catalogue): name, aliases, information, link and an
+  optional reference photo. If a scanned object matches an item, that item's official information is shown;
+  otherwise the AI's estimate is shown and marked "may be wrong".
+* **🔍 button in HoloMotion 3D:** turn the camera on, hold an object in front of it and press 🔍 - the same result
+  appears in a panel, with a "View 3D model" button when a matching 3D model exists.
+* Files: `scan.py` (database + AI), `scan_ui.py` (tab), `holomotion_tab.py` (viewer bridge).
