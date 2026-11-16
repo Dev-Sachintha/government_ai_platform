@@ -29,6 +29,8 @@ def render_holomotion_tab(db_path=None, llm_cfg=None, vision_model="", on_change
         return
 
     running = st.session_state.get("holo_on", False)
+    if not running:
+        st.session_state["scanjob:holoscan"] = None   # viewer closed: forget any unfinished scan
     c1, c2 = st.columns([1, 3])
     with c1:
         if not running:

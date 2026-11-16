@@ -608,9 +608,31 @@ def main():
     if not check_password():
         return
 
-    # Pause 1-second auto-refresh while actively streaming an AI response so stream isn't cut off
+    # Background ticker. It used to re-run the WHOLE page every second (st_autorefresh); a re-run that arrives
+    # while the page is still processing a click makes Streamlit drop that click (buttons / forms "do nothing").
+    # A fragment only re-runs itself and asks for a full re-run only when something really needs it.
     if not st.session_state.get("is_streaming", False):
-        st_autorefresh(interval=1000, limit=None, key="timeout_ticker")
+        _busy = any(
+            k.startswith(("job:", "scanjob:")) and v is not None for k, v in list(st.session_state.items())
+        )
+
+        @st.fragment(run_every=1 if _busy else 10)
+        def _ticker():
+            if client_ts := st.query_params.get("user_active_ts"):     # activity reported by the browser
+                if client_ts != st.session_state.get("client_last_active_ts", 0):
+                    st.session_state["client_last_active_ts"] = client_ts
+                    st.session_state["last_active"] = time.time()
+            expired = time.time() - st.session_state.get("last_active", time.time()) > TIMEOUT_SECONDS
+            finished = tuple(sorted(
+                k for k, v in list(st.session_state.items())
+                if k.startswith(("job:", "scanjob:")) and isinstance(v, dict) and v["future"].done()
+            ))
+            new_finish = bool(finished) and finished != st.session_state.get("_ticker_seen_fin")
+            st.session_state["_ticker_seen_fin"] = finished
+            if expired or new_finish:
+                st.rerun()   # full re-run: log the user out / show the finished job's result
+
+        _ticker()
     client_activity_and_shortcuts()
 
     user_role = st.session_state.get("role", "analyst")

@@ -82,8 +82,11 @@ def show_scan_result(msg: str, db_path: str, is_admin: bool):
 # ------------------------------------------------------------------ admin catalogue manager
 def render_item_manager(db_path, username, on_change=None):
     items = scan.list_items(db_path)
-    expanded = bool(st.session_state.pop("scan_open_admin", False))
+    flash = st.session_state.pop("scan_flash", None)
+    expanded = bool(st.session_state.pop("scan_open_admin", False)) or flash is not None
     with st.expander(f"🛠️ Admin: scan catalogue ({len(items)} items)", expanded=expanded):
+        if flash:
+            (st.success if flash[0] else st.error)(flash[1])
         st.caption(
             "Add things one by one. When a scanned object matches an item, the information you write here is shown. "
             "Aliases help the AI match (e.g. “travel document, booklet”)."
@@ -100,10 +103,14 @@ def render_item_manager(db_path, username, on_change=None):
         if submitted:
             data = photo.getvalue() if photo else (last if use_last else None)
             ok, msg = scan.add_item(db_path, name, keywords, info, link, data, username)
-            (st.success if ok else st.error)(msg)
-            if ok and on_change:
-                on_change()
-                st.rerun()
+            if ok:
+                if on_change:
+                    on_change()
+                st.session_state["scan_flash"] = (True, msg)
+                st.rerun()          # reload the list; the message is shown after the reload
+            else:
+                st.error(msg)
+                st.toast(msg, icon="⚠️")     # visible even when the error text is below the screen edge
         if not items:
             st.info("No items yet.")
         for it in items:
@@ -120,13 +127,18 @@ def render_item_manager(db_path, username, on_change=None):
                 c1, c2 = st.columns(2)
                 if c1.button("💾 Save", key=f"{k}_s"):
                     ok, msg = scan.update_item(db_path, it["id"], n, kw, inf, lk, username)
-                    (st.success if ok else st.error)(msg)
-                    if ok and on_change:
-                        on_change()
+                    if ok:
+                        if on_change:
+                            on_change()
+                        st.session_state["scan_flash"] = (True, f"Saved “{n}”.")
+                        st.rerun()
+                    else:
+                        st.error(msg)
                 if c2.button("🗑️ Delete", key=f"{k}_d"):
                     scan.delete_item(db_path, it["id"], username)
                     if on_change:
                         on_change()
+                    st.session_state["scan_flash"] = (True, f"Deleted “{it['name']}”.")
                     st.rerun()
 
 
