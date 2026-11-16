@@ -56,6 +56,8 @@
       <button id="bForm" title="F">✊ Form</button>
       <button id="bOpen" title="O">✋ Release</button>
       <button id="bNext" title="V / →">✌ Next</button>
+      <button id="bUpload" class="full-btn" title="Upload .glb, .obj, or .stl">📂 Load 3D Model</button>
+      <input id="modelUpload" type="file" accept=".glb,.obj,.stl" hidden>
     </section>
   </aside>
 
@@ -91,11 +93,7 @@
       <button id="bVoice" class="icon" title="Voice commands + read aloud (M)">🎤</button>
       <button id="bRec" class="icon" title="Record a video (K)">⏺</button>
       <button id="bDemo" class="icon" title="Play demo (D)">▶</button>
-      <button id="bAdd" class="icon" title="Add your own 3D model (.glb .gltf .obj .stl .ply) — or drop a file anywhere">➕</button>
-      <button id="bOrient" class="icon" title="Rotate the orientation of your model" hidden>🧭</button>
-      <button id="bClearMine" class="icon" title="Remove all models I added">🗑</button>
       <button id="bHelp" class="icon" title="Keyboard help (H)">?</button>
-      <input id="modelFile" type="file" accept=".glb,.gltf,.obj,.stl,.ply" multiple hidden>
     </div>
   </div>
 
@@ -111,7 +109,6 @@
       <tr><td>🙌 two hands</td><td>Zoom (also <kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd>, ctrl + wheel)</td></tr>
       <tr><td><kbd>X</kbd> <kbd>,</kbd> <kbd>.</kbd></td><td>Cut-away slice (move hand / mouse)</td></tr>
       <tr><td><kbd>Q</kbd> <kbd>M</kbd> <kbd>K</kbd> <kbd>I</kbd></td><td>Quiz · voice · record video · describe part</td></tr>
-      <tr><td>➕ / drop a file</td><td>Add your own 3D model (.glb .gltf .obj .stl .ply) · 🧭 fixes its orientation</td></tr>
       <tr><td>drag</td><td>Rotate the model</td></tr>
       <tr><td><kbd>R</kbd> <kbd>L</kbd> <kbd>T</kbd></td><td>Auto-rotate · labels · trails</td></tr>
       <tr><td><kbd>C</kbd> <kbd>D</kbd> <kbd>H</kbd></td><td>Camera · demo · this help</td></tr>

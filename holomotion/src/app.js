@@ -2,9 +2,8 @@
 // (hand openness = how far apart the parts fly), twist = rotate, ✌ = next, ☝ point = pick a part, pinch = pull it
 // out, two hands = zoom, snap = dissolve. Plus quiz, voice, cut-away, recording, beating heart / breathing lungs.
 // MediaPipe (hands) + WebGL2 (GPU particles via transform feedback) + procedural models.
-import { CATALOG, isMachine, buildModel, addCustomModel } from './models/catalog.js';
-import { parseMesh } from './lib/meshLoader.js';
-import { saveUserFile, loadUserFiles, clearUserFiles } from './lib/userModels.js';
+import { CATALOG, isMachine, buildModel } from './models/catalog.js';
+import { loadExternalModelFile } from './models/externalLoader.js';
 import { Controller } from './logic/controller.js';
 import { OPEN, FIST, PEACE, POINT, NONE } from './logic/gestures.js';
 import { IDLE, SPHERE, FORMED, DISSOLVE, SIM } from './logic/state.js';
@@ -50,7 +49,13 @@ class ModelStore {
     } catch (e) { this.worker = null; }
   }
   get(i) { const m = this.cache.get(i); if (m) this.touch(i); return m || null; }
-  touch(i) { this.lru = [i, ...this.lru.filter((k) => k !== i)]; while (this.lru.length > 6) this.cache.delete(this.lru.pop()); }
+  touch(i) {
+    this.lru = [i, ...this.lru.filter((k) => k !== i)];
+    while (this.lru.length > 6) {
+      const evict = this.lru.pop();
+      if (CATALOG[evict]?.category !== 'Custom') this.cache.delete(evict);
+    }
+  }
   request(i) {
     if (this.cache.has(i)) return Promise.resolve(this.cache.get(i));
     if (this.pending.has(i)) return this.pending.get(i).promise;
@@ -58,7 +63,7 @@ class ModelStore {
     const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
     const job = { id: this.nextId++, promise, resolve, reject };
     this.pending.set(i, job);
-    if (this.worker && !CATALOG[i].custom) this.worker.postMessage({ id: job.id, index: i, n: this.n });
+    if (this.worker) this.worker.postMessage({ id: job.id, index: i, n: this.n });
     else setTimeout(() => this.buildSync(i), 0);
     return promise;
   }
@@ -145,7 +150,6 @@ class App {
     this.buildUI();
     this.bindInput();
     this.store.request(CFG.start).then(() => this.prefetch());
-    this.restoreUserModels();
   }
 
   prefetch() { this.store.request((this.ctl.state.index + 1) % CATALOG.length); }
@@ -288,7 +292,7 @@ class App {
     // 8. colour morph + per-part colours once a machine has formed
     const k = 1 - Math.exp(-dt * 4);
     for (let i = 0; i < 3; i++) this.color[i] += (def.color[i] - this.color[i]) * k;
-    const tintT = (machine || def.custom) && st.state === FORMED ? smooth(0.2, 1.4, formT) : 0;
+    const tintT = machine && st.state === FORMED ? smooth(0.2, 1.4, formT) : 0;
     this.tintMix += (tintT - this.tintMix) * (1 - Math.exp(-dt * 5));
     const alpha = st.alpha(t);
 
@@ -577,56 +581,6 @@ class App {
     });
     this.showCategory(this.activeCat);
   }
-  /** Add (or refresh) the category tab + chip for model i; used for models the user imports. */
-  addCatalogChip(i) {
-    const d = CATALOG[i], tabs = this.$('catTabs'), chips = this.$('catChips');
-    if (!this.tabs[d.category]) {
-      const b = document.createElement('button');
-      b.className = 'tab'; b.dataset.cat = d.category;
-      b.addEventListener('click', () => this.showCategory(d.category));
-      tabs.appendChild(b); this.tabs[d.category] = b;
-    }
-    this.tabs[d.category].textContent = `${d.category} · ${CATALOG.filter((x) => x.category === d.category).length}`;
-    const b = document.createElement('button');
-    b.className = 'chip'; b.dataset.index = i; b.dataset.cat = d.category;
-    b.innerHTML = `<i style="color:${rgbCss(d.color)};background:${rgbCss(d.color)}"></i>`;
-    b.appendChild(document.createTextNode(d.name));
-    b.addEventListener('click', () => this.selectModel(i));
-    chips.appendChild(b); this.chips[i] = b;
-    b.hidden = b.dataset.cat !== this.activeCat;
-  }
-
-  async addModelFromBuffer(buf, filename, { persist = true, select = true } = {}) {
-    const ext = String(filename).split('.').pop().toLowerCase();
-    const mesh = await parseMesh(buf, ext);
-    const tris = mesh.tris.length / 9, pts = mesh.pts.length / 3;
-    const i = addCustomModel({
-      name: String(filename).replace(/\.[^.]+$/, '').slice(0, 40) || 'My model', mesh,
-      fact: tris ? `Imported from ${filename} · ${tris.toLocaleString()} triangles` : `Imported from ${filename} · ${pts.toLocaleString()} points`,
-      tilt: ext === 'stl' ? -90 : 0,   // CAD files are usually Z-up; the 🧭 button cycles the orientation
-    });
-    this.ctl.state.n = CATALOG.length;
-    this.addCatalogChip(i);
-    if (persist) saveUserFile(filename, buf).catch(() => {});
-    if (select) { this.showCategory('My Models'); this.selectModel(i); }
-    return i;
-  }
-
-  async importModelFile(file) {
-    try {
-      this.toast(`Reading ${file.name}…`);
-      await this.addModelFromBuffer(await file.arrayBuffer(), file.name);
-      this.toast(`✔ Added “${file.name}” to My Models`);
-    } catch (e) { console.error(e); this.toast(`⚠ ${e.message || e}`); }
-  }
-
-  async restoreUserModels() {
-    try {
-      const files = await loadUserFiles();
-      for (const f of files || []) { try { await this.addModelFromBuffer(f.buffer, f.name, { persist: false, select: false }); } catch (e) { console.warn('saved model skipped', f.name, e); } }
-    } catch (e) { /* storage unavailable: imported models just won't persist */ }
-  }
-
   showCategory(c) {
     this.activeCat = c;
     for (const [k, b] of Object.entries(this.tabs)) b.classList.toggle('active', k === c);
@@ -659,7 +613,6 @@ class App {
       $('cat').textContent = def.category; $('name').textContent = def.name; $('fact').textContent = def.fact || '';
       $('bigTitle').querySelector('.t').textContent = def.name; $('bigTitle').querySelector('.s').textContent = def.fact || '';
       $('explodeBox').hidden = !isM;
-      $('bOrient').hidden = !def.custom;
       this.chips.forEach((c, i) => c.classList.toggle('active', i === st.index));
       if (this.activeCat !== def.category) this.showCategory(def.category);
       this.guideKey = null;
@@ -726,6 +679,49 @@ class App {
     this.autoFormAt = autoForm ? this.t + 1.0 : null;
   }
 
+  async loadCustomFile(file) {
+    if (!file) return;
+    this.toast(`⏳ Sampling ${file.name}…`);
+    try {
+      const idx = CATALOG.length;
+      const model = await loadExternalModelFile(file, CFG.n, idx);
+      CATALOG.push(model.def);
+      this.ctl.state.n = CATALOG.length;
+
+      // Cache directly in ModelStore so the worker isn't needed for uploaded files
+      this.store.cache.set(idx, model);
+      this.store.touch(idx);
+
+      // Ensure the "Custom" tab exists in the bottom catalog bar
+      if (!this.tabs['Custom']) {
+        const tab = document.createElement('button');
+        tab.className = 'tab';
+        tab.dataset.cat = 'Custom';
+        tab.addEventListener('click', () => this.showCategory('Custom'));
+        this.$('catTabs').appendChild(tab);
+        this.tabs['Custom'] = tab;
+      }
+      const customCount = CATALOG.filter((d) => d.category === 'Custom').length;
+      this.tabs['Custom'].textContent = `Custom · ${customCount}`;
+
+      // Add model chip
+      const chip = document.createElement('button');
+      chip.className = 'chip';
+      chip.dataset.index = idx;
+      chip.dataset.cat = 'Custom';
+      chip.innerHTML = `<i style="color:${rgbCss(model.def.color)};background:${rgbCss(model.def.color)}"></i>${model.def.name}`;
+      chip.addEventListener('click', () => this.selectModel(idx));
+      this.$('catChips').appendChild(chip);
+      this.chips[idx] = chip;
+
+      this.selectModel(idx, true);
+      this.toast(`✨ Loaded ${model.def.name}`);
+    } catch (err) {
+      console.error(err);
+      this.toast(`❌ ${err.message}`);
+    }
+  }
+
   bindInput() {
     const $ = this.$, ctl = this.ctl;
     const now = () => this.t;
@@ -769,6 +765,13 @@ class App {
       else ctl.keyPose(OPEN, now());
     };
     $('bNext').onclick = () => { this.stopDemo(); ctl.keyPose(PEACE, now()); };
+    const uploadInput = $('modelUpload');
+    $('bUpload').onclick = () => uploadInput.click();
+    uploadInput.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (file) this.loadCustomFile(file);
+      uploadInput.value = '';
+    };
     $('bLabels').onclick = () => this.toggle('labelsOn', 'bLabels');
     $('bRotate').onclick = () => this.toggle('autoRotate', 'bRotate');
     $('bHandRot').onclick = () => this.toggle('handRotate', 'bHandRot');
@@ -779,18 +782,6 @@ class App {
     $('bVoice').onclick = () => this.toggleVoice();
     $('bRec').onclick = () => this.toggleRecord();
     $('bHelp').onclick = () => { $('help').hidden = !$('help').hidden; };
-    const fileIn = $('modelFile');
-    $('bAdd').onclick = () => fileIn.click();
-    fileIn.onchange = async () => { for (const f of [...fileIn.files]) await this.importModelFile(f); fileIn.value = ''; };
-    addEventListener('dragover', (e) => e.preventDefault());
-    addEventListener('drop', async (e) => { e.preventDefault(); for (const f of [...(e.dataTransfer?.files || [])]) await this.importModelFile(f); });
-    $('bOrient').onclick = () => {
-      const d = CATALOG[ctl.state.index];
-      if (d?.custom) { const seq = [0, 90, 180, -90]; d.tilt = seq[(seq.indexOf(d.tilt || 0) + 1) % 4]; this.toast(`🧭 Orientation ${d.tilt}°`); }
-    };
-    $('bClearMine').onclick = async () => {
-      if (confirm('Remove all the 3D models you added?')) { try { await clearUserFiles(); } catch (e) { /* ignore */ } location.reload(); }
-    };
     $('partClose').onclick = () => this.deselect();
     $('partPull').onclick = () => { if (this.sel >= 0) this.pulled = !this.pulled; };
     $('partSpeak').onclick = () => { const L = this.model?.labels[this.sel]; if (L) { this.spoken.push(`${L.label}. ${L.info}.`); speak(`${L.label}. ${L.info}.`); } };
