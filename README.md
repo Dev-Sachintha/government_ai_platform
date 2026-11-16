@@ -150,3 +150,29 @@ It is turned into glowing particles and appears under the **My Models** tab; use
 - The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets or the documented development defaults.
 - Both Admin and Analyst roles can open **👥 User Management** and create additional Admin or Analyst accounts. New passwords are stored as salted PBKDF2-SHA256 hashes, not plaintext.
 - Both roles have a **🖥️ Screen Monitor** button in the sidebar and a Screen Monitor tab. Screen capture starts only after the signed-in user clicks Start and approves the browser's screen/window selection prompt. The preview stays in that browser and is not sent to the server. Use Chrome or Edge on HTTPS or localhost.
+
+
+## Mobile Phone Monitor (Admin / Analyst only)
+
+The **📱 Mobile Phone Monitor** dashboard is available only to Admin and Analyst accounts. It shows paired Android phones, model/Android version, battery percentage, connection status, resolution, and the latest screen frame. The Android owner must start sharing in the companion app and approve Android's MediaProjection system prompt. A persistent Android notification is shown while sharing; the owner can stop at any time. The feature does not collect microphone audio, camera images, messages, keystrokes, or touch input.
+
+### Deploy the monitor API separately
+
+Streamlit Community Cloud does not provide a persistent inbound API endpoint for an Android companion app. Therefore the project includes a small separate FastAPI service in `mobile_monitor_service/`. Deploy that folder as a private HTTPS web service (the included `render.yaml` is a Render blueprint):
+
+1. Create a long random secret (at least 32 characters). Set it as `MOBILE_MONITOR_API_KEY` in the API service environment.
+2. Deploy `mobile_monitor_service/` using `pip install -r requirements.txt` and `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+3. In Streamlit Cloud → Manage app → Settings → Secrets, set the same key and the API service URL:
+   ```toml
+   MOBILE_MONITOR_API_URL = "https://YOUR-MONITOR-SERVICE.onrender.com"
+   MOBILE_MONITOR_API_KEY = "the-same-long-random-secret"
+   ```
+4. Reboot the Streamlit app. Do not commit the key to GitHub. Use HTTPS only.
+
+### Build and install the Android companion
+
+Open `android_companion/` in Android Studio (JDK 17 recommended), allow Gradle sync, then build and install the debug APK on the Android phone. Enter the HTTPS API URL and the same pairing key, tap **Start Screen Sharing**, and approve Android's system permission prompt. Android 10+ is recommended. Keep the phone awake and connected to the internet for continuous updates.
+
+### Data handling and limitations
+
+The API uses a shared secret header, keeps device telemetry and the latest JPEG frame in service memory only, and expires screen frames after three minutes. Restarting the API clears its in-memory device/frame list. Use a private deployment, rotate the shared key if exposed, and restrict access to the service where possible. Screen preview is refreshed as JPEG snapshots (approximately every 1.5 seconds), not a high-frame-rate video stream. This implementation is for explicitly authorized devices only; it has no stealth mode or remote-control capability.

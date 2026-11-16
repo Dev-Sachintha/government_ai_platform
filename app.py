@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import sqlite3
+import requests
 import html
 import streamlit as st
 import persist
@@ -264,6 +265,97 @@ def render_screen_monitor() -> None:
     components.html(monitor_html, height=610, scrolling=False)
 
 
+
+def _mobile_monitor_config():
+    """Return the separately hosted Android monitor service settings."""
+    sec = _read_secrets(["MOBILE_MONITOR_API_URL", "MOBILE_MONITOR_API_KEY"])
+    base_url = str(sec.get("MOBILE_MONITOR_API_URL") or os.environ.get("MOBILE_MONITOR_API_URL") or "").strip().rstrip("/")
+    api_key = str(sec.get("MOBILE_MONITOR_API_KEY") or os.environ.get("MOBILE_MONITOR_API_KEY") or "").strip()
+    return base_url, api_key
+
+
+def render_mobile_phone_monitor(db_path: str, username: str) -> None:
+    """Admin/analyst dashboard for explicitly consented Android companion devices."""
+    st.header("📱 Mobile Phone Monitor")
+    st.caption("Connected Android devices • live screen snapshots • device telemetry")
+    st.info(
+        "Phone owners must install the companion app, enter the service URL and pairing key, "
+        "and explicitly approve Android's screen-capture permission. Monitoring stops when "
+        "they stop sharing or revoke permission."
+    )
+    base_url, api_key = _mobile_monitor_config()
+    if not base_url or not api_key:
+        st.warning("Mobile monitoring service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets.")
+        with st.expander("Configuration example"):
+            st.code('MOBILE_MONITOR_API_URL = "https://your-monitor-service.example.com"\nMOBILE_MONITOR_API_KEY = "use-a-long-random-secret"', language="toml")
+        st.markdown("The companion API is included in `mobile_monitor_service/`. Deploy it separately (for example, on a private HTTPS Render/Railway service), then add its URL and the same secret here.")
+        return
+
+    # Poll the service so battery/status and the latest screen snapshot stay current.
+    st_autorefresh(interval=3000, key="mobile_phone_monitor_auto_refresh")
+    headers = {"X-Monitor-Key": api_key}
+    try:
+        response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
+        response.raise_for_status()
+        devices = response.json().get("devices", [])
+    except Exception as exc:
+        st.error(f"Could not connect to the mobile monitoring service: {exc}")
+        return
+
+    if not devices:
+        st.warning("No Android phones are connected. Install the Android companion app and pair a phone to get started.")
+        return
+
+    import datetime
+    import pandas as pd
+    rows = []
+    for device in devices:
+        rows.append({
+            "Device": device.get("device_name") or device.get("device_id", "Unknown"),
+            "Model": device.get("model", "—"),
+            "Android": device.get("android_version", "—"),
+            "Battery": f"{device.get('battery_percent')}%" if device.get("battery_percent") is not None else "—",
+            "Network": device.get("network_type", "—"),
+            "Screen": device.get("screen_resolution", "—"),
+            "Status": "Online" if device.get("online") else "Offline",
+            "Last seen (UTC)": device.get("last_seen", "—"),
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    choices = {
+        f"{d.get('device_name') or d.get('device_id')} ({d.get('model', 'Android')})": d.get("device_id")
+        for d in devices
+    }
+    selected_label = st.selectbox("Select Android phone", list(choices.keys()))
+    selected_id = choices[selected_label]
+    selected = next((d for d in devices if d.get("device_id") == selected_id), {})
+    left, right = st.columns(2)
+    with left:
+        st.metric("Battery", f"{selected.get('battery_percent')}%" if selected.get("battery_percent") is not None else "Unknown")
+        st.write("**Connection:**", "Online" if selected.get("online") else "Offline")
+        st.write("**Manufacturer:**", selected.get("manufacturer", "—"))
+        st.write("**Android version:**", selected.get("android_version", "—"))
+        st.write("**Resolution:**", selected.get("screen_resolution", "—"))
+    with right:
+        st.write("**Network:**", selected.get("network_type", "—"))
+        st.write("**Device ID:**", selected_id)
+        st.write("**Last seen (UTC):**", selected.get("last_seen", "—"))
+        st.caption("Screen images are short-lived snapshots held by the monitor service in memory; they are not archived by this dashboard.")
+    if st.button("🔄 Refresh phone status", key="refresh_mobile_devices"):
+        st.rerun()
+    try:
+        frame_response = requests.get(f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10)
+        if frame_response.status_code == 200:
+            st.subheader("📺 Phone Screen Preview")
+            st.image(frame_response.content, caption="Latest screen frame • refreshed when you reload this dashboard", use_container_width=True)
+        elif frame_response.status_code == 404:
+            st.info("No screen frame received yet. On the phone, press Start Screen Sharing and approve Android's permission prompt.")
+        else:
+            st.warning(f"Screen preview unavailable (HTTP {frame_response.status_code}).")
+    except Exception as exc:
+        st.warning(f"Could not load the screen preview: {exc}")
+    st.caption("For privacy, this dashboard does not provide remote control, microphone access, camera access, or hidden monitoring.")
+
+
 def check_session_timeout():
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
         return False
@@ -359,6 +451,8 @@ def render_sidebar_controls(db_path, user_role):
         if user_role in ("admin", "analyst"):
             if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
                 st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
+            if st.button("📱 Mobile Phone Monitor", use_container_width=True, key="sidebar_mobile_monitor"):
+                st.session_state["show_mobile_monitor_panel"] = not st.session_state.get("show_mobile_monitor_panel", False)
 
         st.markdown("---")
         with st.expander("⚙️ Session & System Admin", expanded=False):
@@ -768,8 +862,11 @@ def main():
     if st.session_state.get("show_screen_monitor_panel") and user_role in ("admin", "analyst"):
         render_screen_monitor()
         st.divider()
+    if st.session_state.get("show_mobile_monitor_panel") and user_role in ("admin", "analyst"):
+        render_mobile_phone_monitor(db_path, username)
+        st.divider()
 
-    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor = st.tabs(
+    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor, tab_mobile = st.tabs(
         [
             "💬 AI Workspace & Chat",
             "🌐 Website Sources",
@@ -779,6 +876,7 @@ def main():
             "📊 Database Workbench",
             "👥 User Management",
             "🖥️ Screen Monitor",
+            "📱 Mobile Phone Monitor",
         ]
     )
     with tab1:
@@ -833,3 +931,9 @@ def main():
 if __name__ == "__main__":
     main()
 
+
+    with tab_mobile:
+        if user_role in ("admin", "analyst"):
+            render_mobile_phone_monitor(db_path, username)
+        else:
+            st.error("Only Admin and Analyst accounts can access Mobile Phone Monitor.")

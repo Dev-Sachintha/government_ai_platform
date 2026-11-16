@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: government-ai-mobile-monitor
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MOBILE_MONITOR_API_KEY
+        sync: false
