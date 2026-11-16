@@ -125,3 +125,11 @@ Open the **🖐️ HoloMotion 3D** tab, click **▶ Launch**, then **Start with 
 It is served by Streamlit's component server from the `holomotion/` folder (no npm build needed).
 Hand tracking runs in the browser; the MediaPipe engine is loaded from jsDelivr (needs internet).
 Use Chrome or Edge. The viewer is only started when you click Launch, so it does not slow the rest of the app.
+
+## Add your own 3D model (HoloMotion tab)
+In the HoloMotion viewer press **➕** (or drag a file onto the viewer) and pick a **.glb, .gltf, .obj, .stl or .ply** file.
+It is turned into glowing particles and appears under the **My Models** tab; use the normal gestures with it.
+- **🧭** rotates the orientation if the model lies on its side (CAD/STL files are usually Z-up).
+- **🗑** removes all models you added. Added models are remembered in your browser (IndexedDB), not on the server.
+- Colours are kept when the file has vertex colours or material colours. glTF with Draco/Meshopt compression or an
+  external .bin file is not supported: export a plain .glb.

@@ -10,6 +10,7 @@ import { BIOLOGY } from './biology.js';
 import { VEHICLES2, MACHINES } from './machines.js';
 import { makeRng } from '../lib/rng.js';
 import { build, flatten, allocate, shuffleIndex, normalize } from '../lib/sampling.js';
+import { sampleMesh } from '../lib/meshLoader.js';
 
 export const CATALOG = [
   ...WONDERS.map((w) => ({ ...w, kind: 'wonder', category: 'Wonders', tilt: 0 })),
@@ -22,6 +23,12 @@ export const CATALOG = [
 
 export const isMachine = (i) => CATALOG[i]?.kind === 'machine';
 
+/** Register a model imported by the user at run time (main thread only; the worker never sees these). */
+export function addCustomModel({ name, mesh, color = [0.4, 0.88, 1], fact = '', tilt = 0 }) {
+  CATALOG.push({ name, kind: 'wonder', category: 'My Models', custom: true, mesh, color, fact, tilt });
+  return CATALOG.length - 1;
+}
+
 const FIT_RADIUS = 1.18;   // the fully exploded view is scaled to fit this radius (globe = 1.0)
 
 /** Build model `index` with exactly n particles. Deterministic for a given (index, n, seed). */
@@ -32,6 +39,10 @@ export function buildModel(index, n, seed = 0) {
   const offset = new Float32Array(n * 4);
   const tint = new Float32Array(n * 3);
 
+  if (def.custom) {
+    const { target, tint: t2 } = sampleMesh(def.mesh, n, rng, def.color);
+    return { index, def, n, target, offset, tint: t2, pick: new Float32Array(n).fill(-1), labels: [], groups: [], fitScale: 1, exCenter: [0, 0, 0], ms: performance.now() - t0 };
+  }
   if (def.kind === 'wonder') {
     const target = build(def.build(), n, rng);
     normalize(target);
