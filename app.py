@@ -3,6 +3,9 @@ import os
 import re
 import tempfile
 import time
+import hashlib
+import secrets
+import streamlit.components.v1 as components
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import sqlite3
@@ -146,12 +149,103 @@ def _make_backup_bytes(db_path):
         os.remove(tmp)
 
 
+def _password_digest(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000).hex()
+
+
+def _seed_default_users(db_path: str) -> None:
+    """Create the two initial accounts once; existing database accounts are preserved."""
+    conn = sqlite3.connect(db_path)
+    try:
+        for username, (password, role) in MOCK_USERS.items():
+            exists = conn.execute("SELECT 1 FROM app_users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
+            if not exists:
+                salt = secrets.token_hex(16)
+                conn.execute(
+                    "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
+                    (username, _password_digest(password, salt), salt, role, "system"),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def verify_credentials(user: str, pwd: str) -> str | None:
-    if user in MOCK_USERS:
-        expected_pwd, role = MOCK_USERS[user]
-        if hmac.compare_digest(pwd.encode(), expected_pwd.encode()):
-            return role
+    conn = sqlite3.connect("database.db")
+    try:
+        row = conn.execute(
+            "SELECT password_hash,password_salt,role FROM app_users WHERE username = ? COLLATE NOCASE AND active = 1",
+            (user,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row:
+        candidate = _password_digest(pwd, row[1])
+        return row[2] if hmac.compare_digest(candidate, row[0]) else None
     return None
+
+
+def render_user_management(db_path: str, username: str, role: str) -> None:
+    st.header("👥 User Management")
+    st.caption("Only Admin and Analyst accounts can create new Admin or Analyst accounts.")
+    with st.form("create_platform_user", clear_on_submit=True):
+        new_username = st.text_input("New username", max_chars=40).strip()
+        new_password = st.text_input("Temporary password", type="password")
+        confirm_password = st.text_input("Confirm password", type="password")
+        new_role = st.selectbox("Account role", ["analyst", "admin"])
+        submitted = st.form_submit_button("➕ Create user", type="primary")
+    if submitted:
+        if role not in ("admin", "analyst"):
+            st.error("You are not allowed to create users.")
+        elif not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
+            st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
+        elif len(new_password) < 10:
+            st.error("Password must contain at least 10 characters.")
+        elif new_password != confirm_password:
+            st.error("Passwords do not match.")
+        else:
+            salt = secrets.token_hex(16)
+            conn = sqlite3.connect(db_path)
+            try:
+                conn.execute(
+                    "INSERT INTO app_users (username,password_hash,password_salt,role,created_by) VALUES (?,?,?,?,?)",
+                    (new_username, _password_digest(new_password, salt), salt, new_role, username),
+                )
+                conn.commit()
+                log_event(db_path, username, "USER_CREATED", f"username={new_username}; role={new_role}")
+                save_now()
+                st.success(f"User '{new_username}' created successfully.")
+            except sqlite3.IntegrityError:
+                st.error("That username already exists.")
+            finally:
+                conn.close()
+    st.subheader("Registered users")
+    conn = sqlite3.connect(db_path)
+    try:
+        users = pd.read_sql_query("SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE", conn)
+    finally:
+        conn.close()
+    st.dataframe(users, use_container_width=True, hide_index=True)
+
+
+def render_screen_monitor() -> None:
+    st.header("🖥️ Screen Monitor")
+    st.info("Screen sharing starts only after you select a screen/window and approve the browser prompt. Nothing is captured or transmitted to the server by this preview.")
+    monitor_html = r'''<!doctype html><html><head><style>
+      body{font-family:Arial,sans-serif;margin:0;color:var(--text-color,#222)}
+      button{padding:10px 16px;border:0;border-radius:8px;background:#1769aa;color:white;font-weight:600;cursor:pointer;margin:4px}
+      button.stop{background:#a83232} video{width:100%;max-height:520px;background:#111;border-radius:10px;margin-top:10px}
+      #status{font-size:13px;margin:8px 4px}
+    </style></head><body>
+      <button id="start">▶ Start Screen Monitor</button><button id="stop" class="stop" disabled>■ Stop</button>
+      <div id="status">Not sharing. Click Start and choose a screen or window.</div><video id="preview" autoplay playsinline muted></video>
+      <script>
+      const start=document.getElementById('start'), stop=document.getElementById('stop'), video=document.getElementById('preview'), status=document.getElementById('status'); let stream=null;
+      function finish(){if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}video.srcObject=null;start.disabled=false;stop.disabled=true;status.textContent='Screen sharing stopped.';}
+      start.addEventListener('click',async()=>{try{if(!navigator.mediaDevices?.getDisplayMedia)throw new Error('Screen capture is not supported. Use Chrome or Edge over HTTPS or localhost.');stream=await navigator.mediaDevices.getDisplayMedia({video:true,audio:false});video.srcObject=stream;start.disabled=true;stop.disabled=false;status.textContent='Screen preview active in this browser only.';stream.getVideoTracks()[0].addEventListener('ended',finish);}catch(e){status.textContent='Could not start: '+e.message;}});
+      stop.addEventListener('click',finish);window.addEventListener('beforeunload',finish);
+      </script></body></html>'''
+    components.html(monitor_html, height=610, scrolling=False)
 
 
 def check_session_timeout():
@@ -246,6 +340,9 @@ def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
         username = st.session_state.get("current_user", "User")
         render_sidebar_threads(db_path, username)
+        if user_role in ("admin", "analyst"):
+            if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
+                st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
 
         st.markdown("---")
         with st.expander("⚙️ Session & System Admin", expanded=False):
@@ -595,6 +692,7 @@ def main():
     persist_cfg = persist.get_config(_read_secrets(persist.SECRET_KEYS))
     persist.restore_if_needed(persist_cfg, db_path)   # cold start: bring back saved data
     init_db(db_path)
+    _seed_default_users(db_path)
     init_chat_tables(db_path)
     persist.maybe_save(persist_cfg, db_path)           # auto-save after any change
     st.session_state["persist_cfg"] = persist_cfg
@@ -651,8 +749,11 @@ def main():
     llm_cfg = llm.load_config(_read_secrets(secret_keys))
 
     ui_theme.render_hero(html.escape(str(username)), str(user_role))
+    if st.session_state.get("show_screen_monitor_panel") and user_role in ("admin", "analyst"):
+        render_screen_monitor()
+        st.divider()
 
-    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2 = st.tabs(
+    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor = st.tabs(
         [
             "💬 AI Workspace & Chat",
             "🌐 Website Sources",
@@ -660,6 +761,8 @@ def main():
             "📷 Scan",
             "🖐️ HoloMotion 3D",
             "📊 Database Workbench",
+            "👥 User Management",
+            "🖥️ Screen Monitor",
         ]
     )
     with tab1:
@@ -699,6 +802,18 @@ def main():
                     except Exception as e:
                         st.error(f"Query failed: {e}")
 
+    with tab_users:
+        if user_role in ("admin", "analyst"):
+            render_user_management(db_path, username, user_role)
+        else:
+            st.error("Only Admin and Analyst accounts can access User Management.")
+    with tab_monitor:
+        if user_role in ("admin", "analyst"):
+            render_screen_monitor()
+        else:
+            st.error("Only Admin and Analyst accounts can access Screen Monitor.")
+
 
 if __name__ == "__main__":
     main()
+

@@ -31,6 +31,20 @@ def init_db(db_path: str) -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst')),
+                created_by TEXT NOT NULL DEFAULT 'system',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS web_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL UNIQUE,

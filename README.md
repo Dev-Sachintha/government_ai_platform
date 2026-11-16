@@ -144,3 +144,9 @@ It is turned into glowing particles and appears under the **My Models** tab; use
 * **🔍 button in HoloMotion 3D:** turn the camera on, hold an object in front of it and press 🔍 - the same result
   appears in a panel, with a "View 3D model" button when a matching 3D model exists.
 * Files: `scan.py` (database + AI), `scan_ui.py` (tab), `holomotion_tab.py` (viewer bridge).
+
+
+## User Management and Screen Monitor
+- The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets or the documented development defaults.
+- Both Admin and Analyst roles can open **👥 User Management** and create additional Admin or Analyst accounts. New passwords are stored as salted PBKDF2-SHA256 hashes, not plaintext.
+- Both roles have a **🖥️ Screen Monitor** button in the sidebar and a Screen Monitor tab. Screen capture starts only after the signed-in user clicks Start and approves the browser's screen/window selection prompt. The preview stays in that browser and is not sent to the server. Use Chrome or Edge on HTTPS or localhost.
