@@ -193,6 +193,7 @@ def identify(db_path, cfg, vision_model, jpeg_bytes):
             small = _to_jpeg(jpeg_bytes, 1024, 85)
         except Exception:
             return False, "That is not a valid image."
+        vision_model = llm.resolve_vision_model(cfg, vision_model)
         ready, problem = llm.vision_ready(cfg, vision_model)
         if not ready:
             return False, problem + " (Scanning needs an AI model that can read pictures.)"
@@ -200,7 +201,26 @@ def identify(db_path, cfg, vision_model, jpeg_bytes):
         catalogue = "\n".join(
             f"{it['id']}: {it['name']}" + (f" - {it['keywords']}" if it["keywords"] else "") for it in items
         ) or "(the catalogue is empty)"
-        raw = llm.describe_image(cfg, small, PROMPT.format(catalogue=catalogue), vision_model, timeout=120)
+        prompt = PROMPT.format(catalogue=catalogue)
+        try:
+            raw = llm.describe_image(cfg, small, prompt, vision_model, timeout=120)
+        except llm.LLMError as first:
+            if first.kind not in ("no_model", "no_vision"):
+                raise
+            raw, last = None, first
+            # that model is retired / text-only: try the picture-capable models this account really has
+            for alt in llm.vision_candidates(cfg, exclude=(vision_model,))[:3]:
+                try:
+                    raw = llm.describe_image(cfg, small, prompt, alt, timeout=120)
+                    vision_model = alt
+                    break
+                except llm.LLMError as e2:
+                    last = e2
+                    if e2.kind not in ("no_model", "no_vision"):
+                        raise
+            if raw is None:
+                raise last
+        llm.remember_vision_model(cfg, vision_model)
         ai = _parse_ai(raw)
         facts = ai.get("facts") if isinstance(ai.get("facts"), list) else []
         out = {
@@ -222,6 +242,7 @@ def identify(db_path, cfg, vision_model, jpeg_bytes):
             if mid is not None and it["id"] == mid:
                 out["item"] = {k: it[k] for k in ("id", "name", "info", "link", "has_photo")}
                 break
+        out["model"] = vision_model
         log_event(db_path, "scan", "SCAN", out["ai"]["name"])
         return True, json.dumps(out)
     except llm.LLMError as e:

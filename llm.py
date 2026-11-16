@@ -10,6 +10,8 @@ Providers (set LLM_PROVIDER in Streamlit "Secrets" or as an environment variable
 import base64
 import json
 import os
+import re
+import time
 
 import requests
 
@@ -54,9 +56,10 @@ SECRET_KEYS = [
 
 
 class LLMError(Exception):
-    def __init__(self, message: str, looped: bool = False):
+    def __init__(self, message: str, looped: bool = False, kind: str = ""):
         super().__init__(message)
         self.looped = looped
+        self.kind = kind   # "no_model" (404) or "no_vision" (model cannot read pictures)
 
 
 GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -174,11 +177,12 @@ def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
         return
     body = resp.text[:300]
     if resp.status_code == 400 and "must be a string" in body:
-        hint = f' For Groq use LLM_VISION_MODEL = "{GROQ_VISION_MODEL}".' if "groq.com" in cfg.get("base_url", "") else ""
+        hint = " See console.groq.com/docs/vision for the current vision models." if "groq.com" in cfg.get("base_url", "") else ""
         raise LLMError(
             f"The AI model '{cfg.get('model', '')}' can only read text, not pictures. "
             "Add LLM_VISION_MODEL in the app's Secrets (Manage app > Settings > Secrets) with a model that "
-            "understands images." + hint
+            "understands images." + hint,
+            kind="no_vision",
         )
     if resp.status_code == 500 and "repeat" in body.lower():
         raise LLMError("The model got stuck repeating itself.", looped=True)
@@ -187,7 +191,7 @@ def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
             "The AI service rejected the API key. Check LLM_API_KEY in Secrets."
         )
     if resp.status_code == 404:
-        raise LLMError(_not_found_message(cfg))
+        raise LLMError(_not_found_message(cfg), kind="no_model")
     if resp.status_code == 429:
         raise LLMError(
             "The AI service rate limit was reached. Wait a minute and try again."
@@ -483,3 +487,69 @@ def vision_ready(cfg: dict, model: str) -> tuple[bool, str]:
     if not ok:
         return False, f"The vision model '{model}' is not installed."
     return True, ""
+
+
+# ---------------------------------------------------------------- vision model discovery
+# Providers retire/rename models often (e.g. Groq's Llama-4 Scout). Instead of trusting one hard-coded name,
+# look at what the account really offers and pick a model that can read pictures.
+_NOT_VISION = ("whisper", "tts", "guard", "embed", "orpheus", "allam", "gpt-oss", "safeguard", "moderation", "rerank", "compound", "transcribe")
+_VISION_HINTS = [
+    r"llama-4-(scout|maverick)",
+    r"vision|\bvl\b|-vl-|llava|pixtral|multimodal|omni",
+    r"qwen/qwen3\.\d+",       # Qwen 3.5+ are multimodal (plain qwen3-32b is text-only)
+    r"gemma-?3",
+    r"gpt-4o|gpt-4\.1|gpt-5|o4-mini",
+]
+_models_cache: dict = {}
+_working_vision: dict = {}
+
+
+def list_models(cfg: dict) -> list:
+    """All model ids of an OpenAI-compatible provider (cached for 10 minutes; [] if unavailable)."""
+    if cfg.get("provider") != "openai":
+        return []
+    key = cfg.get("base_url", "")
+    hit = _models_cache.get(key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    ids: list = []
+    try:
+        r = requests.get(f"{cfg['base_url']}/models", headers=_headers(cfg), timeout=10)
+        if r.status_code == 200:
+            ids = [m.get("id", "") for m in r.json().get("data", []) if m.get("id")]
+    except Exception:
+        ids = []
+    if ids:
+        _models_cache[key] = (time.time(), ids)
+    return ids
+
+
+def vision_candidates(cfg: dict, exclude=()) -> list:
+    ids = list_models(cfg)
+    ranked: list = []
+    for pat in _VISION_HINTS:
+        for i in ids:
+            low = i.lower()
+            if re.search(pat, low) and not any(w in low for w in _NOT_VISION) and i not in ranked and i not in exclude:
+                ranked.append(i)
+    return ranked
+
+
+def resolve_vision_model(cfg: dict, preferred: str) -> str:
+    """The vision model to use now: one that worked before, else the preferred name if the account has it,
+    else the best picture-capable model the account offers."""
+    if cfg.get("provider") != "openai":
+        return preferred
+    key = cfg.get("base_url", "")
+    if key in _working_vision:
+        return _working_vision[key]
+    ids = list_models(cfg)
+    if not ids or preferred in ids:
+        return preferred
+    cands = vision_candidates(cfg)
+    return cands[0] if cands else preferred
+
+
+def remember_vision_model(cfg: dict, model: str) -> None:
+    if cfg.get("provider") == "openai":
+        _working_vision[cfg.get("base_url", "")] = model

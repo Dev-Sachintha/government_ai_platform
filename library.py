@@ -191,6 +191,7 @@ def describe_items(db_path, item_ids, llm_cfg, vision_model, username) -> tuple[
         ids = list(item_ids)[:MAX_AI_ITEMS_PER_RUN]
         if not ids:
             return True, "Nothing needs an AI description."
+        vision_model = llm.resolve_vision_model(llm_cfg, vision_model)
         ready, problem = llm.vision_ready(llm_cfg, vision_model)
         if not ready:
             return False, problem
