@@ -866,7 +866,10 @@ def main():
         render_mobile_phone_monitor(db_path, username)
         st.divider()
 
-    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor, tab_mobile = st.tabs(
+    # Keep the tab collection in one variable, then index it explicitly.
+    # This avoids an undefined tab_mobile name if an older tab-unpacking
+    # statement is accidentally retained during deployment/merge.
+    app_tabs = st.tabs(
         [
             "💬 AI Workspace & Chat",
             "🌐 Website Sources",
@@ -879,6 +882,8 @@ def main():
             "📱 Mobile Phone Monitor",
         ]
     )
+    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor = app_tabs[:8]
+    mobile_monitor_tab = app_tabs[8]
     with tab1:
         render_ai_chat_interface(db_path, llm_cfg, user_role, username)
     with tab_web:
@@ -926,14 +931,12 @@ def main():
             render_screen_monitor()
         else:
             st.error("Only Admin and Analyst accounts can access Screen Monitor.")
-
-
-if __name__ == "__main__":
-    main()
-
-
-    with tab_mobile:
+    with mobile_monitor_tab:
         if user_role in ("admin", "analyst"):
             render_mobile_phone_monitor(db_path, username)
         else:
             st.error("Only Admin and Analyst accounts can access Mobile Phone Monitor.")
+
+
+if __name__ == "__main__":
+    main()
