@@ -138,6 +138,8 @@ def render_scan_tab(db_path, user_role, username, llm_cfg, vision_model, on_chan
         "Point the camera at a real object and press **Scan**. The AI works out what it is and the information comes up. "
         "Objects the admin has added to the catalogue show the official information."
     )
+    if is_admin:
+        st.caption(f"Vision model in use: `{vision_model or 'not set'}`")
     source = st.radio("Photo from", ["📷 Camera", "🖼️ Upload a photo"], horizontal=True, key="scan_src", label_visibility="collapsed")
     if source.startswith("📷"):
         shot = st.camera_input("Point the camera at an object", key="scan_cam")

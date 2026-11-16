@@ -59,6 +59,9 @@ class LLMError(Exception):
         self.looped = looped
 
 
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+
 def load_config(secrets: dict | None = None) -> dict:
     secrets = secrets or {}
 
@@ -74,7 +77,10 @@ def load_config(secrets: dict | None = None) -> dict:
     cfg["base_url"] = (get("LLM_BASE_URL") or d["base_url"]).rstrip("/")
     cfg["api_key"] = get("LLM_API_KEY")
     cfg["model"] = get("LLM_MODEL") or d["model"]
-    cfg["vision_model"] = get("LLM_VISION_MODEL") or d["vision_model"] or cfg["model"]
+    vision = get("LLM_VISION_MODEL") or d["vision_model"]
+    if not vision and provider == "openai" and "groq.com" in cfg["base_url"]:
+        vision = GROQ_VISION_MODEL   # Groq's text models (e.g. gpt-oss) cannot read pictures
+    cfg["vision_model"] = vision or cfg["model"]
     return cfg
 
 
@@ -167,6 +173,13 @@ def _raise_for_status(cfg: dict, resp: requests.Response) -> None:
     if resp.status_code == 200:
         return
     body = resp.text[:300]
+    if resp.status_code == 400 and "must be a string" in body:
+        hint = f' For Groq use LLM_VISION_MODEL = "{GROQ_VISION_MODEL}".' if "groq.com" in cfg.get("base_url", "") else ""
+        raise LLMError(
+            f"The AI model '{cfg.get('model', '')}' can only read text, not pictures. "
+            "Add LLM_VISION_MODEL in the app's Secrets (Manage app > Settings > Secrets) with a model that "
+            "understands images." + hint
+        )
     if resp.status_code == 500 and "repeat" in body.lower():
         raise LLMError("The model got stuck repeating itself.", looped=True)
     if resp.status_code in (401, 403):
