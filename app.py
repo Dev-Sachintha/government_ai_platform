@@ -157,6 +157,22 @@ def _seed_default_users(db_path: str) -> None:
     """Create the two initial accounts once; existing database accounts are preserved."""
     conn = sqlite3.connect(db_path)
     try:
+        # Create the user table here as well as in init_db(). This makes startup
+        # resilient when Streamlit Cloud is running an older db_utils.py module.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst')),
+                created_by TEXT NOT NULL DEFAULT 'system',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
         for username, (password, role) in MOCK_USERS.items():
             exists = conn.execute("SELECT 1 FROM app_users WHERE username = ? COLLATE NOCASE", (username,)).fetchone()
             if not exists:
