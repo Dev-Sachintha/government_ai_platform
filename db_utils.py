@@ -36,7 +36,7 @@ def init_db(db_path: str) -> None:
                 username TEXT NOT NULL COLLATE NOCASE UNIQUE,
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst')),
+                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst', 'user')),
                 created_by TEXT NOT NULL DEFAULT 'system',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 active INTEGER NOT NULL DEFAULT 1

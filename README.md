@@ -177,4 +177,26 @@ Open `android_companion/` in Android Studio (JDK 17 recommended), allow Gradle s
 
 The API uses a shared secret header, keeps device telemetry and the latest JPEG frame in service memory only, and expires screen frames after three minutes. Restarting the API clears its in-memory device/frame list. Use a private deployment, rotate the shared key if exposed, and restrict access to the service where possible. Screen preview is refreshed as JPEG snapshots (approximately every 1.5 seconds), not a high-frame-rate video stream. This implementation is for explicitly authorized devices only; it has no stealth mode or remote-control capability.
 
-### Ravana will come to you
+## 🖥️ Screen Monitor for other computers (consent-based)
+Uses the same monitor service as the phone monitor (`mobile_monitor_service/`, deployed on Render) and the same
+`MOBILE_MONITOR_API_URL` / `MOBILE_MONITOR_API_KEY` secrets.
+
+1. On the other computer, open `https://<your-service>.onrender.com/pc` in Chrome or Edge.
+2. Enter a computer name and the pairing key, press **Start sharing this screen**, choose a screen and approve the
+   browser prompt. The page shows a red "your screen is being shared" banner and the browser shows its own indicator.
+3. Admins/analysts see it in the **Screen Monitor** tab (live picture every few seconds, view only).
+4. The person presses **Stop sharing** at any time; the last picture is deleted from the service immediately.
+
+Nothing is captured without the user choosing a screen; there is no remote control, sound, camera, microphone,
+keyboard or file access.
+
+## Roles and what each can see
+| Role | Tabs |
+|---|---|
+| **user** | AI Workspace & Chat, Scan, HoloMotion 3D (nothing else is created or shown) |
+| **analyst** | all tabs; can create `user` and `analyst` accounts; can disable/enable `user` accounts |
+| **admin** | all tabs; can create any account; can disable/enable any account except their own |
+
+Add ordinary users in **👥 User Management** (username, temporary password of 10+ characters, role = `user`).
+An unknown or missing role is treated as `user` (least privilege). Older databases are upgraded automatically
+(the `app_users` table is rebuilt once so the `user` role is allowed; existing accounts and passwords are kept).

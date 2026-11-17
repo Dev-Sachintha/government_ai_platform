@@ -2,7 +2,8 @@ import os, secrets, threading, time
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
+from pathlib import Path
 from pydantic import BaseModel, Field
 
 API_KEY = os.environ.get("MOBILE_MONITOR_API_KEY", "").strip()
@@ -21,6 +22,7 @@ def authorize(value: Optional[str]):
 
 class Heartbeat(BaseModel):
     device_id: str = Field(min_length=8, max_length=80)
+    kind: str = Field(default="android", max_length=20)   # "android" phone or "pc" browser
     device_name: str = Field(default="Android phone", max_length=80)
     manufacturer: str = Field(default="", max_length=80)
     model: str = Field(default="", max_length=100)
@@ -28,6 +30,18 @@ class Heartbeat(BaseModel):
     battery_percent: Optional[int] = Field(default=None, ge=0, le=100)
     network_type: str = Field(default="unknown", max_length=40)
     screen_resolution: str = Field(default="", max_length=40)
+
+PC_PAGE = Path(__file__).with_name("pc_share.html")
+
+
+@app.get("/pc", response_class=HTMLResponse)
+def pc_share_page():
+    """Page that a computer's user opens to SHARE their screen (they choose the screen and can stop any time)."""
+    return HTMLResponse(
+        PC_PAGE.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer"},
+    )
+
 
 @app.get("/health")
 def health():
@@ -39,6 +53,7 @@ def heartbeat(payload: Heartbeat, x_monitor_key: Optional[str] = Header(default=
     now = datetime.now(timezone.utc).isoformat()
     with lock:
         item = payload.model_dump()
+        item["kind"] = "pc" if item.get("kind") == "pc" else "android"
         item["last_seen"] = now
         item["online"] = True
         devices[payload.device_id] = item

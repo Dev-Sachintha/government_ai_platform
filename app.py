@@ -154,6 +154,45 @@ def _password_digest(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), 260000).hex()
 
 
+_APP_USERS_SQL = """
+    CREATE TABLE app_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        password_hash TEXT NOT NULL,
+        password_salt TEXT NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('admin', 'analyst', 'user')),
+        created_by TEXT NOT NULL DEFAULT 'system',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        active INTEGER NOT NULL DEFAULT 1
+    )
+"""
+
+
+def _migrate_app_users(db_path: str) -> None:
+    """Older databases only allowed the roles admin/analyst. Rebuild the table so ordinary 'user' accounts work.
+    Existing accounts, passwords and ids are kept."""
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='app_users'").fetchone()
+        if not row or "'user'" in (row[0] or ""):
+            return
+        conn.execute("BEGIN")
+        try:
+            conn.execute("ALTER TABLE app_users RENAME TO app_users_old")
+            conn.execute(_APP_USERS_SQL)
+            conn.execute(
+                "INSERT INTO app_users (id,username,password_hash,password_salt,role,created_by,created_at,active) "
+                "SELECT id,username,password_hash,password_salt,role,created_by,created_at,active FROM app_users_old"
+            )
+            conn.execute("DROP TABLE app_users_old")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
 def _seed_default_users(db_path: str) -> None:
     """Create the two initial accounts once; existing database accounts are preserved."""
     conn = sqlite3.connect(db_path)
@@ -167,7 +206,7 @@ def _seed_default_users(db_path: str) -> None:
                 username TEXT NOT NULL COLLATE NOCASE UNIQUE,
                 password_hash TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst')),
+                role TEXT NOT NULL CHECK(role IN ('admin', 'analyst', 'user')),
                 created_by TEXT NOT NULL DEFAULT 'system',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 active INTEGER NOT NULL DEFAULT 1
@@ -185,6 +224,7 @@ def _seed_default_users(db_path: str) -> None:
         conn.commit()
     finally:
         conn.close()
+    _migrate_app_users(db_path)
 
 
 def verify_credentials(user: str, pwd: str) -> str | None:
@@ -204,16 +244,26 @@ def verify_credentials(user: str, pwd: str) -> str | None:
 
 def render_user_management(db_path: str, username: str, role: str) -> None:
     st.header("👥 User Management")
-    st.caption("Only Admin and Analyst accounts can create new Admin or Analyst accounts.")
+    st.caption(
+        "Admin and Analyst accounts can add ordinary **User** accounts. Users can use only "
+        "AI Workspace & Chat, Scan and HoloMotion 3D; every other part of the app is hidden from them."
+    )
+    # Who may create which role (an Analyst cannot create an Admin, so nobody can promote themselves).
+    creatable = ["user", "analyst", "admin"] if role == "admin" else ["user", "analyst"]
     with st.form("create_platform_user", clear_on_submit=True):
         new_username = st.text_input("New username", max_chars=40).strip()
         new_password = st.text_input("Temporary password", type="password")
         confirm_password = st.text_input("Confirm password", type="password")
-        new_role = st.selectbox("Account role", ["analyst", "admin"])
-        submitted = st.form_submit_button("➕ Create user", type="primary")
+        new_role = st.selectbox(
+            "Account role", creatable, index=0,
+            help="user = AI Workspace & Chat, Scan, HoloMotion 3D only. analyst = most tabs. admin = everything.",
+        )
+        submitted = st.form_submit_button("➕ Create account", type="primary")
     if submitted:
         if role not in ("admin", "analyst"):
             st.error("You are not allowed to create users.")
+        elif new_role not in creatable:
+            st.error("You are not allowed to create that kind of account.")
         elif not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
             st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
         elif len(new_password) < 10:
@@ -231,22 +281,55 @@ def render_user_management(db_path: str, username: str, role: str) -> None:
                 conn.commit()
                 log_event(db_path, username, "USER_CREATED", f"username={new_username}; role={new_role}")
                 save_now()
-                st.success(f"User '{new_username}' created successfully.")
+                st.session_state["user_mgmt_flash"] = f"Account '{new_username}' ({new_role}) created. Give them the username and the temporary password."
             except sqlite3.IntegrityError:
                 st.error("That username already exists.")
+            except sqlite3.Error as exc:
+                st.error(f"Could not create the account: {exc}")
             finally:
                 conn.close()
+            if st.session_state.get("user_mgmt_flash"):
+                st.rerun()
+    flash = st.session_state.pop("user_mgmt_flash", None)
+    if flash:
+        st.success(flash)
+
     st.subheader("Registered users")
     conn = sqlite3.connect(db_path)
     try:
-        users = pd.read_sql_query("SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE", conn)
+        users = pd.read_sql_query(
+            "SELECT username, role, created_by, created_at, active FROM app_users ORDER BY username COLLATE NOCASE", conn
+        )
     finally:
         conn.close()
-    st.dataframe(users, use_container_width=True, hide_index=True)
+    shown = users.copy()
+    shown["active"] = shown["active"].map({1: "yes", 0: "disabled"})
+    st.dataframe(shown, use_container_width=True, hide_index=True)
+
+    # Enable / disable an account (a disabled account cannot log in). Admin: anyone; Analyst: ordinary users only.
+    manageable = [
+        r for r in users.itertuples()
+        if r.username.lower() != username.lower() and (role == "admin" or r.role == "user")
+    ]
+    if manageable:
+        with st.expander("Disable or re-enable an account"):
+            labels = {f"{r.username} ({r.role}, {'active' if r.active else 'disabled'})": r for r in manageable}
+            choice = st.selectbox("Account", list(labels.keys()), key="um_pick")
+            target = labels[choice]
+            new_state = 0 if target.active else 1
+            if st.button("🔒 Disable this account" if target.active else "🔓 Re-enable this account", key="um_toggle"):
+                conn = sqlite3.connect(db_path)
+                try:
+                    conn.execute("UPDATE app_users SET active=? WHERE username=? COLLATE NOCASE", (new_state, target.username))
+                    conn.commit()
+                finally:
+                    conn.close()
+                log_event(db_path, username, "USER_ENABLED" if new_state else "USER_DISABLED", f"username={target.username}")
+                save_now()
+                st.rerun()
 
 
-def render_screen_monitor() -> None:
-    st.header("🖥️ Screen Monitor")
+def _render_local_screen_preview() -> None:
     st.info("Screen sharing starts only after you select a screen/window and approve the browser prompt. Nothing is captured or transmitted to the server by this preview.")
     monitor_html = r'''<!doctype html><html><head><style>
       body{font-family:Arial,sans-serif;margin:0;color:var(--text-color,#222)}
@@ -264,6 +347,91 @@ def render_screen_monitor() -> None:
       </script></body></html>'''
     components.html(monitor_html, height=610, scrolling=False)
 
+
+
+def render_screen_monitor(key_prefix: str = "tab") -> None:
+    """Admin/analyst view of OTHER computers whose users chose to share their screen."""
+    st.header("🖥️ Screen Monitor")
+    st.caption("Computers that are sharing their screen with you • live snapshots every few seconds")
+    base_url, api_key = _mobile_monitor_config()
+    if not base_url or not api_key:
+        st.warning("The monitor service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets (the same service the phone monitor uses).")
+    else:
+        st.info(
+            "A computer appears here only when its user opens the sharing page, enters the pairing key, "
+            "chooses a screen and approves the browser prompt. They see a clear “sharing” indicator the whole "
+            "time and can stop at any moment."
+        )
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.link_button("🔗 Open the sharing page", f"{base_url}/pc")
+        with c2:
+            st.code(f"{base_url}/pc", language=None)
+        st.caption("Send this link and the pairing key to the person at the other computer. Use Chrome or Edge.")
+        _pc_monitor_live(base_url, api_key, key_prefix)
+    with st.expander("Preview THIS computer's screen (stays in your own browser)"):
+        _render_local_screen_preview()
+
+
+@st.fragment(run_every=3)
+def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
+    """Live list + latest picture of the computers that are sharing (re-runs by itself, not the whole page)."""
+    headers = {"X-Monitor-Key": api_key}
+    try:
+        response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
+        if response.status_code == 401:
+            st.error("The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one on the service.")
+            return
+        response.raise_for_status()
+        computers = [d for d in response.json().get("devices", []) if d.get("kind") == "pc"]
+    except Exception as exc:
+        st.error(f"Could not connect to the monitor service: {exc}")
+        st.caption("A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically.")
+        return
+
+    if not computers:
+        st.warning("No computers are sharing their screen right now.")
+        with st.expander("How to connect another computer", expanded=True):
+            st.markdown(
+                f"1. On the other computer open **{base_url}/pc** in Chrome or Edge.\n"
+                "2. Type a name for the computer and the **pairing key**.\n"
+                "3. Press **Start sharing this screen**, choose the screen and approve the browser prompt.\n"
+                "4. It appears here within a few seconds. The person can press **Stop sharing** at any time."
+            )
+        return
+
+    import pandas as pd
+    st.dataframe(
+        pd.DataFrame([{
+            "Computer": d.get("device_name") or d.get("device_id", "Unknown"),
+            "System": d.get("manufacturer", "—"),
+            "Browser": d.get("model", "—"),
+            "Screen": d.get("screen_resolution", "—"),
+            "Status": "Online" if d.get("online") else "Offline",
+            "Last seen (UTC)": d.get("last_seen", "—"),
+        } for d in computers]),
+        use_container_width=True, hide_index=True,
+    )
+    choices = {f"{d.get('device_name') or d.get('device_id')}": d.get("device_id") for d in computers}
+    label = st.selectbox("Select a computer", list(choices.keys()), key=f"{key_prefix}_pc_select")
+    selected_id = choices[label]
+    try:
+        frame = requests.get(f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10)
+        if frame.status_code == 200:
+            st.image(frame.content, caption=f"{label} • latest picture (updates every few seconds)", use_container_width=True)
+        elif frame.status_code == 404:
+            st.info("Connected, but no picture yet. The person must press Start sharing and choose a screen.")
+        else:
+            st.warning(f"Picture unavailable (HTTP {frame.status_code}).")
+    except Exception as exc:
+        st.warning(f"Could not load the picture: {exc}")
+    if st.button("🗑️ Disconnect and delete this computer's picture", key=f"{key_prefix}_pc_forget"):
+        try:
+            requests.delete(f"{base_url}/v1/devices/{selected_id}", headers=headers, timeout=8)
+        except Exception:
+            pass
+        st.rerun(scope="fragment")
+    st.caption("View only: no remote control, no sound, no camera, no microphone, no keyboard or file access.")
 
 
 def _mobile_monitor_config():
@@ -307,7 +475,7 @@ def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
             st.error("The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one set on the monitor service.")
             return
         response.raise_for_status()
-        devices = response.json().get("devices", [])
+        devices = [d for d in response.json().get("devices", []) if d.get("kind", "android") != "pc"]
     except Exception as exc:
         st.error(f"Could not connect to the mobile monitoring service: {exc}")
         st.caption("A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically.")
@@ -863,7 +1031,7 @@ def main():
         _ticker()
     client_activity_and_shortcuts()
 
-    user_role = st.session_state.get("role", "analyst")
+    user_role = st.session_state.get("role", "user")
     username = st.session_state.get("current_user", "User")
 
     render_sidebar_controls(db_path, user_role)
@@ -880,82 +1048,74 @@ def main():
 
     ui_theme.render_hero(html.escape(str(username)), str(user_role))
     if st.session_state.get("show_screen_monitor_panel") and user_role in ("admin", "analyst"):
-        render_screen_monitor()
+        render_screen_monitor(key_prefix="panel")
         st.divider()
     if st.session_state.get("show_mobile_monitor_panel") and user_role in ("admin", "analyst"):
         render_mobile_phone_monitor(db_path, username, key_prefix="panel")
         st.divider()
 
-    # Keep the tab collection in one variable, then index it explicitly.
-    # This avoids an undefined tab_mobile name if an older tab-unpacking
-    # statement is accidentally retained during deployment/merge.
-    app_tabs = st.tabs(
-        [
-            "💬 AI Workspace & Chat",
-            "🌐 Website Sources",
-            "🖼️ Image & PDF Library",
-            "📷 Scan",
-            "🖐️ HoloMotion 3D",
-            "📊 Database Workbench",
-            "👥 User Management",
-            "🖥️ Screen Monitor",
-            "📱 Mobile Phone Monitor",
-        ]
-    )
-    tab1, tab_web, tab_lib, tab_scan, tab_holo, tab2, tab_users, tab_monitor = app_tabs[:8]
-    mobile_monitor_tab = app_tabs[8]
-    with tab1:
-        render_ai_chat_interface(db_path, llm_cfg, user_role, username)
-    with tab_web:
-        render_web_sources_tab(db_path, user_role, username)
-    with tab_lib:
-        render_library_tab(db_path, user_role, username, llm_cfg)
+    is_staff = user_role in ("admin", "analyst")
     _vision_model = st.session_state.get("vision_model") or llm_cfg["vision_model"]
-    with tab_scan:
-        render_scan_tab(db_path, user_role, username, llm_cfg, _vision_model, on_change=save_now)
-    with tab_holo:
-        render_holomotion_tab(db_path, llm_cfg, _vision_model, on_change=save_now)
-    with tab2:
-        st.header("📊 Database Workbench")
-        st.info("Run read-only SELECT queries against the database.")
-        if user_role != "admin":
-            st.warning("The Database Workbench is available to admins only.")
-        else:
-            sql = st.text_area(
-                "SQL query",
-                value="SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;",
-                height=120,
-            )
-            if st.button("▶️ Run Query"):
-                if not is_safe_select(sql):
-                    st.error("Only a single read-only SELECT statement is allowed.")
-                else:
-                    try:
-                        conn = sqlite3.connect(db_path)
-                        try:
-                            result_df = pd.read_sql_query(sql, conn)
-                        finally:
-                            conn.close()
-                        log_event(db_path, username, "WORKBENCH_QUERY", sql[:500])
-                        st.dataframe(result_df, width="stretch")
-                    except Exception as e:
-                        st.error(f"Query failed: {e}")
 
-    with tab_users:
-        if user_role in ("admin", "analyst"):
+    # Ordinary users see ONLY: AI Workspace & Chat, Scan, HoloMotion 3D. The other tabs are not even created,
+    # so there is nothing for them to open (the role comes from the login, not from anything the user can edit).
+    tab_defs = [
+        ("chat", "💬 AI Workspace & Chat", True),
+        ("web", "🌐 Website Sources", is_staff),
+        ("lib", "🖼️ Image & PDF Library", is_staff),
+        ("scan", "📷 Scan", True),
+        ("holo", "🖐️ HoloMotion 3D", True),
+        ("db", "📊 Database Workbench", is_staff),
+        ("users", "👥 User Management", is_staff),
+        ("monitor", "🖥️ Screen Monitor", is_staff),
+        ("phone", "📱 Mobile Phone Monitor", is_staff),
+    ]
+    visible = [(k, label) for k, label, allowed in tab_defs if allowed]
+    tabs = dict(zip([k for k, _ in visible], st.tabs([label for _, label in visible])))
+
+    with tabs["chat"]:
+        render_ai_chat_interface(db_path, llm_cfg, user_role, username)
+    with tabs["scan"]:
+        render_scan_tab(db_path, user_role, username, llm_cfg, _vision_model, on_change=save_now)
+    with tabs["holo"]:
+        render_holomotion_tab(db_path, llm_cfg, _vision_model, on_change=save_now)
+
+    if is_staff:
+        with tabs["web"]:
+            render_web_sources_tab(db_path, user_role, username)
+        with tabs["lib"]:
+            render_library_tab(db_path, user_role, username, llm_cfg)
+        with tabs["db"]:
+            st.header("📊 Database Workbench")
+            st.info("Run read-only SELECT queries against the database.")
+            if user_role != "admin":
+                st.warning("The Database Workbench is available to admins only.")
+            else:
+                sql = st.text_area(
+                    "SQL query",
+                    value="SELECT * FROM audit_logs ORDER BY id DESC LIMIT 50;",
+                    height=120,
+                )
+                if st.button("▶️ Run Query"):
+                    if not is_safe_select(sql):
+                        st.error("Only a single read-only SELECT statement is allowed.")
+                    else:
+                        try:
+                            conn = sqlite3.connect(db_path)
+                            try:
+                                result_df = pd.read_sql_query(sql, conn)
+                            finally:
+                                conn.close()
+                            log_event(db_path, username, "WORKBENCH_QUERY", sql[:500])
+                            st.dataframe(result_df, width="stretch")
+                        except Exception as e:
+                            st.error(f"Query failed: {e}")
+        with tabs["users"]:
             render_user_management(db_path, username, user_role)
-        else:
-            st.error("Only Admin and Analyst accounts can access User Management.")
-    with tab_monitor:
-        if user_role in ("admin", "analyst"):
+        with tabs["monitor"]:
             render_screen_monitor()
-        else:
-            st.error("Only Admin and Analyst accounts can access Screen Monitor.")
-    with mobile_monitor_tab:
-        if user_role in ("admin", "analyst"):
+        with tabs["phone"]:
             render_mobile_phone_monitor(db_path, username)
-        else:
-            st.error("Only Admin and Analyst accounts can access Mobile Phone Monitor.")
 
 
 if __name__ == "__main__":
