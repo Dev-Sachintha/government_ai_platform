@@ -6,3 +6,8 @@ venv/
 .venv/
 *.env
 .env
+
+android_companion/.gradle/
+android_companion/.idea/
+android_companion/**/build/
+android_companion/local.properties

@@ -29,10 +29,18 @@ import java.util.concurrent.TimeUnit
 
 class MonitorService : Service() {
 
-    private val handler = Handler(Looper.getMainLooper())
+    // IMPORTANT: capture and ALL network calls run on this background thread.
+    // Android throws NetworkOnMainThreadException for network calls on the main thread, and the old code
+    // swallowed that exception, so nothing was ever sent to the server.
+    private val worker = HandlerThread("monitor-capture").apply { start() }
+    private val handler = Handler(worker.looper)
 
+    // Render's free plan needs up to ~1 minute to wake up, so allow long timeouts (this is not the UI thread).
     private val client = OkHttpClient.Builder()
-        .callTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(45, TimeUnit.SECONDS)
+        .readTimeout(45, TimeUnit.SECONDS)
+        .writeTimeout(45, TimeUnit.SECONDS)
+        .callTimeout(75, TimeUnit.SECONDS)
         .build()
 
     private var projection: MediaProjection? = null
@@ -54,7 +62,7 @@ class MonitorService : Service() {
             }
     }
 
-    private var isCapturing = false
+    @Volatile private var isCapturing = false
 
     private val captureTask = object : Runnable {
 
@@ -66,6 +74,23 @@ class MonitorService : Service() {
 
             handler.postDelayed(this, 1500)
         }
+    }
+
+    private fun setStatus(message: String) {
+        getSharedPreferences("monitor", MODE_PRIVATE)
+            .edit()
+            .putString("status", message)
+            .apply()
+    }
+
+    private fun clock(): String =
+        java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+            .format(java.util.Date())
+
+    private fun httpHint(code: Int): String = when (code) {
+        401 -> " - the pairing key does not match MOBILE_MONITOR_API_KEY on the server"
+        404 -> " - the service URL is wrong"
+        else -> ""
     }
 
     override fun onBind(intent: Intent?) = null
@@ -119,10 +144,12 @@ class MonitorService : Service() {
         startProjection(resultCode, data)
 
         if (projection == null || reader == null) {
+            setStatus("Could not start screen capture")
             stopSelf()
             return START_NOT_STICKY
         }
 
+        setStatus("Starting... contacting the server")
         isCapturing = true
 
         handler.post(captureTask)
@@ -384,10 +411,17 @@ class MonitorService : Service() {
                 )
                 .build()
 
-            client.newCall(request).execute().close()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    setStatus("Connected - sending (last at ${clock()})")
+                } else {
+                    setStatus("Server answered HTTP ${response.code}${httpHint(response.code)}")
+                }
+            }
 
-        } catch (_: Exception) {
-            // Network errors are retried on the next heartbeat.
+        } catch (e: Exception) {
+            // Retried on the next cycle, but tell the user why it failed.
+            setStatus("Cannot reach the server: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
         }
     }
 
@@ -410,9 +444,13 @@ class MonitorService : Service() {
             .build()
 
         try {
-            client.newCall(request).execute().close()
-        } catch (_: Exception) {
-            // Upload will be attempted again during the next capture.
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    setStatus("Frame upload failed: HTTP ${response.code}${httpHint(response.code)}")
+                }
+            }
+        } catch (e: Exception) {
+            setStatus("Frame upload failed: ${e.javaClass.simpleName} ${e.message ?: ""}".trim())
         }
     }
 
@@ -437,6 +475,8 @@ class MonitorService : Service() {
 
         stopForeground(STOP_FOREGROUND_REMOVE)
 
+        setStatus("Not sharing")
+
         stopSelf()
     }
 
@@ -452,6 +492,9 @@ class MonitorService : Service() {
             projection?.stop()
         } catch (_: Exception) {
         }
+
+        setStatus("Not sharing")
+        worker.quitSafely()
 
         super.onDestroy()
     }

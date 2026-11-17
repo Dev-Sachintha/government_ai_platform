@@ -274,8 +274,11 @@ def _mobile_monitor_config():
     return base_url, api_key
 
 
-def render_mobile_phone_monitor(db_path: str, username: str) -> None:
-    """Admin/analyst dashboard for explicitly consented Android companion devices."""
+def render_mobile_phone_monitor(db_path: str, username: str, key_prefix: str = "tab") -> None:
+    """Admin/analyst dashboard for explicitly consented Android companion devices.
+
+    key_prefix keeps widget ids unique because this view can be drawn twice (sidebar panel + tab).
+    """
     st.header("📱 Mobile Phone Monitor")
     st.caption("Connected Android devices • live screen snapshots • device telemetry")
     st.info(
@@ -290,23 +293,42 @@ def render_mobile_phone_monitor(db_path: str, username: str) -> None:
             st.code('MOBILE_MONITOR_API_URL = "https://your-monitor-service.example.com"\nMOBILE_MONITOR_API_KEY = "use-a-long-random-secret"', language="toml")
         st.markdown("The companion API is included in `mobile_monitor_service/`. Deploy it separately (for example, on a private HTTPS Render/Railway service), then add its URL and the same secret here.")
         return
+    _mobile_monitor_live(base_url, api_key, key_prefix)
 
-    # Poll the service so battery/status and the latest screen snapshot stay current.
-    st_autorefresh(interval=3000, key="mobile_phone_monitor_auto_refresh")
+
+@st.fragment(run_every=4)
+def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
+    """Live part of the dashboard. It re-runs by itself every 4 s WITHOUT re-running the whole page
+    (a whole-page st_autorefresh made buttons elsewhere lose clicks and slowed every page run)."""
     headers = {"X-Monitor-Key": api_key}
     try:
         response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
+        if response.status_code == 401:
+            st.error("The monitor service rejected the key. MOBILE_MONITOR_API_KEY in the Streamlit secrets must equal the one set on the monitor service.")
+            return
         response.raise_for_status()
         devices = response.json().get("devices", [])
     except Exception as exc:
         st.error(f"Could not connect to the mobile monitoring service: {exc}")
+        st.caption("A free Render service sleeps when idle and can take about a minute to wake up. This view retries automatically.")
         return
 
     if not devices:
-        st.warning("No Android phones are connected. Install the Android companion app and pair a phone to get started.")
+        st.warning("No Android phones are connected yet.")
+        with st.expander("Phone not showing up? Check these", expanded=True):
+            try:
+                ok = requests.get(f"{base_url}/health", timeout=5).status_code == 200
+            except Exception:
+                ok = False
+            st.markdown(
+                f"- Monitor service reachable from this app: **{'yes ✅' if ok else 'no ❌ (it may be waking up)'}**\n"
+                "- On the phone, press **TEST CONNECTION**. It tells you if the URL or the pairing key is wrong.\n"
+                "- The pairing key must be identical in 3 places: the phone app, `MOBILE_MONITOR_API_KEY` on Render, "
+                "and `MOBILE_MONITOR_API_KEY` in the Streamlit secrets.\n"
+                "- After pressing **START SCREEN SHARING**, the phone app shows a live **Status** line (e.g. “Connected - sending”)."
+            )
         return
 
-    import datetime
     import pandas as pd
     rows = []
     for device in devices:
@@ -325,7 +347,7 @@ def render_mobile_phone_monitor(db_path: str, username: str) -> None:
         f"{d.get('device_name') or d.get('device_id')} ({d.get('model', 'Android')})": d.get("device_id")
         for d in devices
     }
-    selected_label = st.selectbox("Select Android phone", list(choices.keys()))
+    selected_label = st.selectbox("Select Android phone", list(choices.keys()), key=f"{key_prefix}_mm_device")
     selected_id = choices[selected_label]
     selected = next((d for d in devices if d.get("device_id") == selected_id), {})
     left, right = st.columns(2)
@@ -340,13 +362,11 @@ def render_mobile_phone_monitor(db_path: str, username: str) -> None:
         st.write("**Device ID:**", selected_id)
         st.write("**Last seen (UTC):**", selected.get("last_seen", "—"))
         st.caption("Screen images are short-lived snapshots held by the monitor service in memory; they are not archived by this dashboard.")
-    if st.button("🔄 Refresh phone status", key="refresh_mobile_devices"):
-        st.rerun()
     try:
         frame_response = requests.get(f"{base_url}/v1/devices/{selected_id}/frame", headers=headers, timeout=10)
         if frame_response.status_code == 200:
             st.subheader("📺 Phone Screen Preview")
-            st.image(frame_response.content, caption="Latest screen frame • refreshed when you reload this dashboard", use_container_width=True)
+            st.image(frame_response.content, caption="Latest screen frame • updates every few seconds", use_container_width=True)
         elif frame_response.status_code == 404:
             st.info("No screen frame received yet. On the phone, press Start Screen Sharing and approve Android's permission prompt.")
         else:
@@ -863,7 +883,7 @@ def main():
         render_screen_monitor()
         st.divider()
     if st.session_state.get("show_mobile_monitor_panel") and user_role in ("admin", "analyst"):
-        render_mobile_phone_monitor(db_path, username)
+        render_mobile_phone_monitor(db_path, username, key_prefix="panel")
         st.divider()
 
     # Keep the tab collection in one variable, then index it explicitly.

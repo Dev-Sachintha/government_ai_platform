@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "lk.gov.aiplatform.monitor"
-        minSdk = 23
+        minSdk = 26
         targetSdk = 35
 
         versionCode = 1

@@ -1,7 +1,13 @@
 
 package lk.gov.aiplatform.monitor
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import java.util.UUID
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
@@ -14,6 +20,27 @@ class MainActivity : Activity() {
 
     private lateinit var url: EditText
     private lateinit var key: EditText
+    private lateinit var status: TextView
+
+    private val ui = Handler(Looper.getMainLooper())
+    private val refreshStatus = object : Runnable {
+        override fun run() {
+            val saved = getSharedPreferences("monitor", MODE_PRIVATE)
+                .getString("status", "Not sharing") ?: "Not sharing"
+            status.text = "Status: $saved"
+            ui.postDelayed(this, 2000)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ui.post(refreshStatus)
+    }
+
+    override fun onPause() {
+        ui.removeCallbacks(refreshStatus)
+        super.onPause()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,6 +92,20 @@ class MainActivity : Activity() {
 
         layout.addView(stopButton)
 
+        val testButton = Button(this).apply {
+            text = "Test connection"
+        }
+
+        layout.addView(testButton)
+
+        status = TextView(this).apply {
+            text = "Status: Not sharing"
+            textSize = 16f
+            setPadding(0, 16, 0, 16)
+        }
+
+        layout.addView(status)
+
         layout.addView(TextView(this).apply {
             text = """
                 Privacy information:
@@ -83,6 +124,38 @@ class MainActivity : Activity() {
                 addView(layout)
             }
         )
+
+        // Android 13+: the notification that tells the user "screen sharing is active" needs this permission.
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 902)
+        }
+
+        testButton.setOnClickListener {
+            val base = url.text.toString().trim().trimEnd('/')
+            val secret = key.text.toString().trim()
+
+            if (!base.startsWith("https://") || secret.length < 32) {
+                Toast.makeText(this, "Enter a valid HTTPS URL and pairing key", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+
+            status.text = "Status: testing the connection... (a sleeping server can take a minute)"
+            ui.removeCallbacks(refreshStatus)
+
+            val deviceId = prefs.getString("device_id", null)
+                ?: UUID.randomUUID().toString().also { prefs.edit().putString("device_id", it).apply() }
+
+            Thread {
+                val result = ConnectionTester.run(base, secret, deviceId)
+                runOnUiThread {
+                    status.text = "Status: $result"
+                    // keep this result visible for a while before the live status takes over again
+                    ui.postDelayed(refreshStatus, 15000)
+                }
+            }.start()
+        }
 
         startButton.setOnClickListener {
 
