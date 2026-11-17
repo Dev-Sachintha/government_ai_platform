@@ -14,6 +14,7 @@ app = FastAPI(title="Government AI Platform - Mobile Monitor API", version="1.0.
 lock = threading.Lock()
 devices = {}
 frames = {}
+pc_metrics = {}
 FRAME_TTL_SECONDS = 180
 
 def authorize(value: Optional[str]):
@@ -30,6 +31,13 @@ class Heartbeat(BaseModel):
     battery_percent: Optional[int] = Field(default=None, ge=0, le=100)
     network_type: str = Field(default="unknown", max_length=40)
     screen_resolution: str = Field(default="", max_length=40)
+
+class PCMetrics(BaseModel):
+    device_id: str = Field(min_length=8, max_length=80)
+    device_name: str = Field(default="PC", max_length=80)
+    kind: str = "pc"
+    metrics: dict
+
 
 PC_PAGE = Path(__file__).with_name("pc_share.html")
 
@@ -75,6 +83,30 @@ async def upload_frame(device_id: str = Form(...), frame: UploadFile = File(...)
         frames[device_id] = (data, time.time())
     return {"ok": True}
 
+@app.post("/v1/pc/metrics")
+def receive_pc_metrics(payload: PCMetrics, x_monitor_key: Optional[str] = Header(default=None)):
+    """Receive telemetry explicitly shared by a locally running PC agent."""
+    authorize(x_monitor_key)
+    now = datetime.now(timezone.utc).isoformat()
+    with lock:
+        devices[payload.device_id] = {
+            "device_id": payload.device_id, "kind": "pc", "device_name": payload.device_name,
+            "last_seen": now, "online": True,
+        }
+        pc_metrics[payload.device_id] = {"metrics": payload.metrics, "received_at": now}
+    return {"ok": True, "received_at": now}
+
+
+@app.get("/v1/pc/metrics")
+def get_pc_metrics(device_id: str, x_monitor_key: Optional[str] = Header(default=None)):
+    authorize(x_monitor_key)
+    with lock:
+        item = pc_metrics.get(device_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="No PC metrics received yet")
+    return item
+
+
 @app.get("/v1/devices")
 def list_devices(x_monitor_key: Optional[str] = Header(default=None)):
     authorize(x_monitor_key)
@@ -104,4 +136,5 @@ def forget_device(device_id: str, x_monitor_key: Optional[str] = Header(default=
     with lock:
         devices.pop(device_id, None)
         frames.pop(device_id, None)
+        pc_metrics.pop(device_id, None)
     return {"ok": True}

@@ -544,6 +544,95 @@ def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
     st.caption("For privacy, this dashboard does not provide remote control, microphone access, camera access, or hidden monitoring.")
 
 
+
+@st.fragment(run_every=5)
+def render_pc_system_monitor(key_prefix: str = "pcmon") -> None:
+    # Dashboard for metrics voluntarily sent by installed PC monitoring agents.
+    st.header("📈 PC System Monitoring")
+    st.caption("Hardware • Network • System activity from computers whose owners started the monitoring agent")
+    base_url, api_key = _mobile_monitor_config()
+    if not base_url or not api_key:
+        st.warning("Configure MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit secrets before connecting PCs.")
+        return
+    headers = {"X-Monitor-Key": api_key}
+    try:
+        response = requests.get(f"{base_url}/v1/devices", headers=headers, timeout=8)
+        response.raise_for_status()
+        devices = [d for d in response.json().get("devices", []) if d.get("kind") == "pc"]
+    except Exception as exc:
+        st.error(f"Could not connect to the monitoring service: {exc}")
+        return
+    if not devices:
+        st.info("No PC monitoring agents are connected yet.")
+        with st.expander("Connect a Windows PC", expanded=True):
+            st.markdown(
+                "1. Install Python 3.10+ on the computer being monitored.\n"
+                "2. Copy `mobile_monitor_service/pc_monitor_agent.py` to that computer.\n"
+                "3. Install its dependency with `py -m pip install psutil requests`.\n"
+                "4. Start it with the service URL and the same pairing key used by this dashboard.\n"
+                "5. Keep the agent running while monitoring is required. Press Ctrl+C to stop."
+            )
+            st.code('''py -m pip install psutil requests
+py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-KEY" --name "Office PC"''', language="powershell")
+        st.caption("The agent sends telemetry only while running. It does not capture screens, audio, keystrokes or allow remote control.")
+        return
+
+    choices = {f"{d.get('device_name', 'PC')} — {'Online' if d.get('online') else 'Offline'}": d["device_id"] for d in devices}
+    selected_label = st.selectbox("Select computer", list(choices), key=f"{key_prefix}_device")
+    selected_id = choices[selected_label]
+    try:
+        result = requests.get(f"{base_url}/v1/pc/metrics", params={"device_id": selected_id}, headers=headers, timeout=8)
+        if result.status_code == 404:
+            st.warning("This computer is registered but has not sent telemetry yet. Start or restart its PC monitoring agent.")
+            return
+        result.raise_for_status()
+        data = result.json().get("metrics", {})
+    except Exception as exc:
+        st.error(f"Could not load PC metrics: {exc}")
+        return
+
+    st.caption(f"Computer: {data.get('hostname', '—')} · {data.get('platform', '—')} · Last update: {data.get('captured_at', '—')}")
+    st.subheader("1. Hardware Monitoring")
+    c = st.columns(4)
+    c[0].metric("CPU Usage", f"{data.get('cpu_percent', 0):.1f}%")
+    c[1].metric("RAM Usage", f"{data.get('ram_percent', 0):.1f}%", f"{data.get('ram_used_mb', 0)} / {data.get('ram_total_mb', 0)} MB")
+    c[2].metric("Disk Usage", f"{data.get('disk_percent', 0):.1f}%", f"{data.get('disk_used_gb', 0)} / {data.get('disk_total_gb', 0)} GB")
+    temp = data.get("cpu_temperature_c")
+    c[3].metric("CPU Temperature", f"{temp:.1f} °C" if isinstance(temp, (int, float)) else "Unavailable")
+    gpu = data.get("gpu")
+    if gpu:
+        st.metric(f"GPU Usage · {gpu.get('name', 'GPU')}", f"{gpu.get('usage_percent', 0):.1f}%")
+        if "memory_used_mb" in gpu:
+            g1, g2 = st.columns(2)
+            g1.metric("GPU Memory", f"{gpu.get('memory_used_mb', 0):.0f} / {gpu.get('memory_total_mb', 0):.0f} MB")
+            g2.metric("GPU Temperature", f"{gpu.get('temperature_c', 0):.1f} °C")
+    else:
+        st.caption("GPU telemetry is unavailable. Windows GPU usage uses GPU Engine counters when supported; NVIDIA systems can use nvidia-smi. CPU temperature depends on hardware/OS sensor support.")
+
+    st.subheader("2. Network Monitoring")
+    n1, n2, n3, n4 = st.columns(4)
+    n1.metric("Connection", "Connected" if data.get("internet_connected") else "No active interface")
+    n2.metric("Download Speed", f"{data.get('download_bytes_per_sec', 0) / 1048576:.2f} MB/s")
+    n3.metric("Upload Speed", f"{data.get('upload_bytes_per_sec', 0) / 1048576:.2f} MB/s")
+    n4.metric("Total Traffic", f"↓ {data.get('download_total_mb', 0):.1f} / ↑ {data.get('upload_total_mb', 0):.1f} MB")
+
+    st.subheader("3. System Activity Monitoring")
+    st.write(f"**Uptime:** {int(data.get('uptime_seconds', 0) // 3600)} hours · **CPU cores:** {data.get('cpu_count', '—')}")
+    st.markdown("**Top running processes**")
+    processes = data.get("processes", [])
+    if processes:
+        st.dataframe(pd.DataFrame(processes), use_container_width=True, hide_index=True)
+    else:
+        st.caption("No process details received.")
+    st.markdown("**Recent Windows error events (last 24 hours)**")
+    errors = data.get("recent_errors", [])
+    if errors:
+        st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
+    else:
+        st.info("No recent Windows error events were reported, or this operating system does not provide Windows Event Logs.")
+    st.caption("Metrics are latest snapshots held in the monitoring service's memory; historical charts are not enabled. Some temperature/GPU sensors are hardware-dependent.")
+
+
 def check_session_timeout():
     if "authenticated" not in st.session_state or not st.session_state["authenticated"]:
         return False
@@ -1069,6 +1158,7 @@ def main():
         ("users", "👥 User Management", is_staff),
         ("monitor", "🖥️ Screen Monitor", is_staff),
         ("phone", "📱 Mobile Phone Monitor", is_staff),
+        ("pcmetrics", "📈 PC System Monitoring", is_staff),
     ]
     visible = [(k, label) for k, label, allowed in tab_defs if allowed]
     tabs = dict(zip([k for k, _ in visible], st.tabs([label for _, label in visible])))
@@ -1116,6 +1206,8 @@ def main():
             render_screen_monitor()
         with tabs["phone"]:
             render_mobile_phone_monitor(db_path, username)
+        with tabs["pcmetrics"]:
+            render_pc_system_monitor()
 
 
 if __name__ == "__main__":

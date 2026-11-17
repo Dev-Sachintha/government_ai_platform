@@ -200,3 +200,27 @@ keyboard or file access.
 Add ordinary users in **👥 User Management** (username, temporary password of 10+ characters, role = `user`).
 An unknown or missing role is treated as `user` (least privilege). Older databases are upgraded automatically
 (the `app_users` table is rebuilt once so the `user` role is allowed; existing accounts and passwords are kept).
+
+
+## 📈 PC Hardware, Network & System Activity Monitoring (consent-based)
+The **PC System Monitoring** tab adds CPU/RAM/GPU/disk metrics, supported temperature sensors, network throughput,
+running process summaries, uptime and recent Windows error events. It uses a local agent because a hosted Streamlit
+app cannot directly inspect the hardware of a visitor's computer.
+
+1. Deploy `mobile_monitor_service/` as described above. The same `MOBILE_MONITOR_API_URL` and
+   `MOBILE_MONITOR_API_KEY` secrets are reused.
+2. On each computer whose owner has agreed to share telemetry, install Python 3.10+ and copy
+   `mobile_monitor_service/pc_monitor_agent.py` to that computer.
+3. In PowerShell run:
+   ```powershell
+   py -m pip install psutil requests
+   py pc_monitor_agent.py --url "https://YOUR-MONITOR-SERVICE" --key "YOUR-PAIRING-KEY" --name "Office PC"
+   ```
+4. The computer appears in **📈 PC System Monitoring** for admins/analysts. The agent sends a snapshot every
+   five seconds. Press `Ctrl+C` to stop sharing.
+
+The agent sends hardware/network metrics, process names and recent Windows error summaries only. It does not
+capture screen/audio/video, keystrokes or files and provides no remote control. Temperature sensors depend on
+hardware/OS support; NVIDIA GPU details require `nvidia-smi`. The service keeps only the latest metrics in memory
+(no historical charts); a service restart clears them. Error-event messages can contain computer/user-specific
+text, so run the agent only with the computer owner's informed permission and protect the pairing key.
