@@ -176,3 +176,5 @@ Open `android_companion/` in Android Studio (JDK 17 recommended), allow Gradle s
 ### Data handling and limitations
 
 The API uses a shared secret header, keeps device telemetry and the latest JPEG frame in service memory only, and expires screen frames after three minutes. Restarting the API clears its in-memory device/frame list. Use a private deployment, rotate the shared key if exposed, and restrict access to the service where possible. Screen preview is refreshed as JPEG snapshots (approximately every 1.5 seconds), not a high-frame-rate video stream. This implementation is for explicitly authorized devices only; it has no stealth mode or remote-control capability.
+
+### Ravana will come
