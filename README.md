@@ -145,12 +145,10 @@ It is turned into glowing particles and appears under the **My Models** tab; use
   appears in a panel, with a "View 3D model" button when a matching 3D model exists.
 * Files: `scan.py` (database + AI), `scan_ui.py` (tab), `holomotion_tab.py` (viewer bridge).
 
-
 ## User Management and Screen Monitor
 - The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets or the documented development defaults.
 - Both Admin and Analyst roles can open **👥 User Management** and create additional Admin or Analyst accounts. New passwords are stored as salted PBKDF2-SHA256 hashes, not plaintext.
 - Both roles have a **🖥️ Screen Monitor** button in the sidebar and a Screen Monitor tab. Screen capture starts only after the signed-in user clicks Start and approves the browser's screen/window selection prompt. The preview stays in that browser and is not sent to the server. Use Chrome or Edge on HTTPS or localhost.
-
 
 ## Mobile Phone Monitor (Admin / Analyst only)
 
@@ -201,7 +199,6 @@ Add ordinary users in **👥 User Management** (username, temporary password of 
 An unknown or missing role is treated as `user` (least privilege). Older databases are upgraded automatically
 (the `app_users` table is rebuilt once so the `user` role is allowed; existing accounts and passwords are kept).
 
-
 ## 📈 PC Hardware, Network & System Activity Monitoring (consent-based)
 The **PC System Monitoring** tab adds CPU/RAM/GPU/disk metrics, supported temperature sensors, network throughput,
 running process summaries, uptime and recent Windows error events. It uses a local agent because a hosted Streamlit
@@ -224,3 +221,10 @@ capture screen/audio/video, keystrokes or files and provides no remote control. 
 hardware/OS support; NVIDIA GPU details require `nvidia-smi`. The service keeps only the latest metrics in memory
 (no historical charts); a service restart clears them. Error-event messages can contain computer/user-specific
 text, so run the agent only with the computer owner's informed permission and protect the pairing key.
+
+## Screen Monitor / Mobile Phone Monitor onboarding card
+When no device is sharing yet, the admin/analyst sees a plain "Share your screen?" card instead of
+a bare warning: the link (or app steps), **why** it's being asked (editable via the Secrets key
+`SCREEN_MONITOR_REASON`), and an explicit **"If you'd rather not"** line stating that declining does
+not restrict the person's access to this app or anything else. Nothing about this card can lock a
+person out of the platform - it only ever explains a choice that was already optional.

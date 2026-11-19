@@ -349,6 +349,43 @@ def _render_local_screen_preview() -> None:
 
 
 
+def _screen_share_reason() -> str:
+    """Why screen sharing is being asked for. An org can override this (Streamlit Secrets:
+    SCREEN_MONITOR_REASON) instead of editing code, so the real reason is always visible here."""
+    sec = _read_secrets(["SCREEN_MONITOR_REASON"])
+    custom = str(sec.get("SCREEN_MONITOR_REASON") or os.environ.get("SCREEN_MONITOR_REASON") or "").strip()
+    return custom or (
+        "To help with remote troubleshooting and to check in on shared/public terminals "
+        "(for example, a help-desk or front-counter PC) without someone having to be there in person."
+    )
+
+
+def _render_share_invite(kind: str, link_label: str, link_url: str, steps: list[str]) -> None:
+    """One consistent 'Share your screen?' onboarding card: link, reason, and a clear opt-out.
+    Used for both the computer and the phone monitor tabs so the invitation always looks the same."""
+    with st.container(border=True):
+        st.markdown(f"#### 🔗 Share your {kind} screen?")
+        st.write(
+            f"An admin or analyst can see your {kind} screen **only after you choose to share it here** - "
+            "nothing is visible before that, and nothing else about your account or access changes "
+            "whether you share it or not."
+        )
+        st.markdown(f"**Why it's being asked:** {_screen_share_reason()}")
+        if link_url:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.link_button(link_label, link_url)
+            with c2:
+                st.code(link_url, language=None)
+        if steps:
+            st.markdown("\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1)))
+        st.markdown(
+            "**If you'd rather not:** that's completely fine - just don't open the link (or press "
+            "Stop if you already started). Declining does not lock you out of this app or anything else; "
+            "nobody is notified, and no part of the platform changes for you either way."
+        )
+
+
 def render_screen_monitor(key_prefix: str = "tab") -> None:
     """Admin/analyst view of OTHER computers whose users chose to share their screen."""
     st.header("🖥️ Screen Monitor")
@@ -357,17 +394,6 @@ def render_screen_monitor(key_prefix: str = "tab") -> None:
     if not base_url or not api_key:
         st.warning("The monitor service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets (the same service the phone monitor uses).")
     else:
-        st.info(
-            "A computer appears here only when its user opens the sharing page, enters the pairing key, "
-            "chooses a screen and approves the browser prompt. They see a clear “sharing” indicator the whole "
-            "time and can stop at any moment."
-        )
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            st.link_button("🔗 Open the sharing page", f"{base_url}/pc")
-        with c2:
-            st.code(f"{base_url}/pc", language=None)
-        st.caption("Send this link and the pairing key to the person at the other computer. Use Chrome or Edge.")
         _pc_monitor_live(base_url, api_key, key_prefix)
     with st.expander("Preview THIS computer's screen (stays in your own browser)"):
         _render_local_screen_preview()
@@ -390,14 +416,18 @@ def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
         return
 
     if not computers:
-        st.warning("No computers are sharing their screen right now.")
-        with st.expander("How to connect another computer", expanded=True):
-            st.markdown(
-                f"1. On the other computer open **{base_url}/pc** in Chrome or Edge.\n"
-                "2. Type a name for the computer and the **pairing key**.\n"
-                "3. Press **Start sharing this screen**, choose the screen and approve the browser prompt.\n"
-                "4. It appears here within a few seconds. The person can press **Stop sharing** at any time."
-            )
+        st.caption("No computer is sharing its screen with you right now.")
+        _render_share_invite(
+            kind="computer",
+            link_label="🖥️ Open the sharing page",
+            link_url=f"{base_url}/pc",
+            steps=[
+                "Open the link above in Chrome or Edge, on the computer you want to share.",
+                "Type a name for the computer and enter the pairing key.",
+                "Press **Start sharing this screen**, then choose a screen/window and approve the browser prompt.",
+                "It appears here within a few seconds. Press **Stop sharing** at any time to end it.",
+            ],
+        )
         return
 
     import pandas as pd
@@ -482,18 +512,28 @@ def _mobile_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
         return
 
     if not devices:
-        st.warning("No Android phones are connected yet.")
-        with st.expander("Phone not showing up? Check these", expanded=True):
+        st.caption("No phone is sharing its screen with you right now.")
+        _render_share_invite(
+            kind="phone",
+            link_label="📱 How to share (companion app)",
+            link_url="",
+            steps=[
+                "Install the Government AI Mobile Monitor companion app (ask your admin for the APK).",
+                "Open it and enter the service URL and the pairing key your admin gave you.",
+                "Press **TEST CONNECTION** first - it tells you if the URL or key is wrong.",
+                "Press **START SCREEN SHARING** and approve Android's permission prompt.",
+                "It appears here within a few seconds. Press **STOP SCREEN SHARING** on the phone at any time.",
+            ],
+        )
+        with st.expander("Phone not showing up? Check these"):
             try:
                 ok = requests.get(f"{base_url}/health", timeout=5).status_code == 200
             except Exception:
                 ok = False
             st.markdown(
                 f"- Monitor service reachable from this app: **{'yes ✅' if ok else 'no ❌ (it may be waking up)'}**\n"
-                "- On the phone, press **TEST CONNECTION**. It tells you if the URL or the pairing key is wrong.\n"
                 "- The pairing key must be identical in 3 places: the phone app, `MOBILE_MONITOR_API_KEY` on Render, "
-                "and `MOBILE_MONITOR_API_KEY` in the Streamlit secrets.\n"
-                "- After pressing **START SCREEN SHARING**, the phone app shows a live **Status** line (e.g. “Connected - sending”)."
+                "and `MOBILE_MONITOR_API_KEY` in the Streamlit secrets."
             )
         return
 

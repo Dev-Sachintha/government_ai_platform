@@ -42,6 +42,7 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.0")
 
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }

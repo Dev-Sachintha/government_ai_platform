@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Government AI Mobile Monitor</string>
+    <string name="device_admin_description">Allows this app to be provisioned as the organization’s device management controller. Monitoring remains visible and user-authorized.</string>
+</resources>
