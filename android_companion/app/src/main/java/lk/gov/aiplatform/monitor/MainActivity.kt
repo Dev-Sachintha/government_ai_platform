@@ -12,15 +12,16 @@ import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.widget.*
+import android.text.InputType
+import android.app.AlertDialog
 import android.view.ViewGroup
 
 class MainActivity : Activity() {
 
     private val requestCapture = 901
 
-    private lateinit var url: EditText
-    private lateinit var key: EditText
     private lateinit var status: TextView
+    private lateinit var accountLabel: TextView
 
     private val ui = Handler(Looper.getMainLooper())
     private val refreshStatus = object : Runnable {
@@ -46,6 +47,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val prefs = getSharedPreferences("monitor", MODE_PRIVATE)
+        applyPlatformLaunch(intent)
 
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -57,34 +59,38 @@ class MainActivity : Activity() {
                 Government AI Platform
                 Mobile Phone Monitor
 
-                Enter your monitoring service URL and pairing key.
+                Screen monitoring is ready.
 
+                Connection details are stored in app-private storage and hidden from the main screen.
                 Screen sharing starts only after you approve Android's permission.
             """.trimIndent()
             textSize = 18f
         })
 
-        url = EditText(this).apply {
-            hint = "https://your-monitor-service.onrender.com"
-            setSingleLine(true)
-            setText(prefs.getString("service_url", ""))
+        // Credentials are intentionally not displayed on the main screen.
+        // They remain in app-private SharedPreferences and can be changed in Connection Settings.
+        accountLabel = TextView(this).apply {
+            textSize = 15f
+            setPadding(0, 10, 0, 10)
+            text = "Platform account: ${prefs.getString("login_user", "Not linked") ?: "Not linked"}"
         }
+        layout.addView(accountLabel)
 
-        layout.addView(url)
-
-        key = EditText(this).apply {
-            hint = "Pairing key"
-            setSingleLine(true)
-            setText(prefs.getString("api_key", ""))
+        val settingsButton = Button(this).apply {
+            text = "Connection Settings"
         }
-
-        layout.addView(key)
+        layout.addView(settingsButton)
 
         val startButton = Button(this).apply {
-            text = "Start Screen Sharing"
+            text = "Start Screen Sharing (Manual)"
         }
 
         layout.addView(startButton)
+
+        val autoButton = Button(this).apply {
+            text = "Auto Screen Monitoring"
+        }
+        layout.addView(autoButton)
 
         val stopButton = Button(this).apply {
             text = "Stop Screen Sharing"
@@ -132,12 +138,49 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 902)
         }
 
+        settingsButton.setOnClickListener {
+            val fields = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(48, 12, 48, 0)
+            }
+            val urlInput = EditText(this).apply {
+                hint = "Monitoring service URL (HTTPS)"
+                setSingleLine(true)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                setText(prefs.getString("service_url", ""))
+            }
+            val keyInput = EditText(this).apply {
+                hint = "Pairing key"
+                setSingleLine(true)
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                setText(prefs.getString("api_key", ""))
+            }
+            fields.addView(urlInput)
+            fields.addView(keyInput)
+            AlertDialog.Builder(this)
+                .setTitle("Connection Settings")
+                .setMessage("Credentials are hidden on the main screen. Update them here only when required.")
+                .setView(fields)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Save") { _, _ ->
+                    val base = urlInput.text.toString().trim().trimEnd('/')
+                    val secret = keyInput.text.toString().trim()
+                    if (!base.startsWith("https://") || secret.length < 32) {
+                        Toast.makeText(this, "Configure a valid HTTPS URL and pairing key in Connection Settings", Toast.LENGTH_LONG).show()
+                    } else {
+                        prefs.edit().putString("service_url", base).putString("api_key", secret).apply()
+                        Toast.makeText(this, "Connection details saved", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .show()
+        }
+
         testButton.setOnClickListener {
-            val base = url.text.toString().trim().trimEnd('/')
-            val secret = key.text.toString().trim()
+            val base = prefs.getString("service_url", "")?.trim()?.trimEnd('/').orEmpty()
+            val secret = prefs.getString("api_key", "")?.trim().orEmpty()
 
             if (!base.startsWith("https://") || secret.length < 32) {
-                Toast.makeText(this, "Enter a valid HTTPS URL and pairing key", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Configure a valid HTTPS URL and pairing key in Connection Settings", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
 
@@ -157,37 +200,39 @@ class MainActivity : Activity() {
             }.start()
         }
 
-        startButton.setOnClickListener {
+        val beginScreenSharing = {
 
-            val base = url.text.toString()
-                .trim()
-                .trimEnd('/')
-
-            val secret = key.text.toString().trim()
+            val base = prefs.getString("service_url", "")?.trim()?.trimEnd('/').orEmpty()
+            val secret = prefs.getString("api_key", "")?.trim().orEmpty()
 
             if (!base.startsWith("https://") || secret.length < 32) {
                 Toast.makeText(
                     this,
-                    "Enter a valid HTTPS URL and pairing key",
+                    "Connection details are not configured. Open Connection Settings first.",
                     Toast.LENGTH_LONG
                 ).show()
+            } else {
+                val manager = getSystemService(
+                    MEDIA_PROJECTION_SERVICE
+                ) as MediaProjectionManager
 
+                startActivityForResult(
+                    manager.createScreenCaptureIntent(),
+                    requestCapture
+                )
+            }
+        }
+
+        startButton.setOnClickListener { beginScreenSharing() }
+        autoButton.setOnClickListener {
+            // Uses the already-saved service URL and pairing key; no re-entry is required.
+            val savedBase = prefs.getString("service_url", "")?.trim().orEmpty()
+            val savedKey = prefs.getString("api_key", "")?.trim().orEmpty()
+            if (savedBase.isBlank() || savedKey.length < 32) {
+                Toast.makeText(this, "Connect this phone once using the service URL and pairing key first.", Toast.LENGTH_LONG).show()
                 return@setOnClickListener
             }
-
-            prefs.edit()
-                .putString("service_url", base)
-                .putString("api_key", secret)
-                .apply()
-
-            val manager = getSystemService(
-                MEDIA_PROJECTION_SERVICE
-            ) as MediaProjectionManager
-
-            startActivityForResult(
-                manager.createScreenCaptureIntent(),
-                requestCapture
-            )
+            beginScreenSharing()
         }
 
         stopButton.setOnClickListener {
@@ -201,6 +246,27 @@ class MainActivity : Activity() {
                 Toast.LENGTH_SHORT
             ).show()
         }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyPlatformLaunch(intent)
+        val user = getSharedPreferences("monitor", MODE_PRIVATE)
+            .getString("login_user", "Not linked") ?: "Not linked"
+        if (::accountLabel.isInitialized) accountLabel.text = "Platform account: $user"
+    }
+
+    private fun applyPlatformLaunch(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "govmonitor" || uri.host != "monitor") return
+        val user = uri.getQueryParameter("login_user")?.trim()?.take(80).orEmpty()
+        val serviceUrl = uri.getQueryParameter("service_url")?.trim()?.trimEnd('/').orEmpty()
+        val prefs = getSharedPreferences("monitor", MODE_PRIVATE)
+        prefs.edit().apply {
+            if (user.isNotBlank()) putString("login_user", user)
+            if (serviceUrl.startsWith("https://")) putString("service_url", serviceUrl)
+        }.apply()
     }
 
     @Deprecated("Android activity result compatibility")
@@ -225,12 +291,12 @@ class MainActivity : Activity() {
 
                     putExtra(
                         "baseUrl",
-                        url.text.toString().trim().trimEnd('/')
+                        getSharedPreferences("monitor", MODE_PRIVATE).getString("service_url", "")
                     )
 
                     putExtra(
                         "apiKey",
-                        key.text.toString().trim()
+                        getSharedPreferences("monitor", MODE_PRIVATE).getString("api_key", "")
                     )
                 }
 

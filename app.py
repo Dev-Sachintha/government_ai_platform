@@ -386,7 +386,7 @@ def _render_share_invite(kind: str, link_label: str, link_url: str, steps: list[
         )
 
 
-def render_screen_monitor(key_prefix: str = "tab") -> None:
+def render_screen_monitor(key_prefix: str = "tab", username: str = "User") -> None:
     """Admin/analyst view of OTHER computers whose users chose to share their screen."""
     st.header("🖥️ Screen Monitor")
     st.caption("Computers that are sharing their screen with you • live snapshots every few seconds")
@@ -394,6 +394,31 @@ def render_screen_monitor(key_prefix: str = "tab") -> None:
     if not base_url or not api_key:
         st.warning("The monitor service is not configured yet. Set MOBILE_MONITOR_API_URL and MOBILE_MONITOR_API_KEY in Streamlit Cloud → Manage app → Settings → Secrets (the same service the phone monitor uses).")
     else:
+        st.markdown("#### ⚡ Auto Screen Monitoring")
+        st.caption(f"Signed-in platform account: **{username}**. The saved pairing key will be supplied securely; you will not need to type it again.")
+        launch_state_key = f"{key_prefix}_pc_auto_launch_url"
+        if st.button("⚡ Auto Screen Monitoring", key=f"{key_prefix}_pc_auto_start", type="primary"):
+            try:
+                launch = requests.post(
+                    f"{base_url}/v1/pc/launch",
+                    headers={"X-Monitor-Key": api_key},
+                    json={"login_user": str(username)[:80]},
+                    timeout=10,
+                )
+                launch.raise_for_status()
+                launch_url = str(launch.json().get("url") or "")
+                if not launch_url:
+                    raise ValueError("The monitor service did not return a launch URL.")
+                if launch_url.startswith("/"):
+                    launch_url = base_url + launch_url
+                st.session_state[launch_state_key] = launch_url
+                st.success("Your secure sharing link is ready. Open it on the computer you want to share.")
+            except Exception as exc:
+                st.error(f"Could not prepare automatic screen monitoring: {exc}")
+        if st.session_state.get(launch_state_key):
+            st.link_button("🖥️ Open Auto Screen Monitoring", st.session_state[launch_state_key], use_container_width=True)
+            st.caption("The link expires after 5 minutes and can be used once. On the PC, click Start and approve the browser's screen-sharing prompt.")
+        st.divider()
         _pc_monitor_live(base_url, api_key, key_prefix)
     with st.expander("Preview THIS computer's screen (stays in your own browser)"):
         _render_local_screen_preview()
@@ -434,6 +459,7 @@ def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
     st.dataframe(
         pd.DataFrame([{
             "Computer": d.get("device_name") or d.get("device_id", "Unknown"),
+            "Logged-in account": d.get("login_user") or "—",
             "System": d.get("manufacturer", "—"),
             "Browser": d.get("model", "—"),
             "Screen": d.get("screen_resolution", "—"),
@@ -1177,7 +1203,7 @@ def main():
 
     ui_theme.render_hero(html.escape(str(username)), str(user_role))
     if st.session_state.get("show_screen_monitor_panel") and user_role in ("admin", "analyst"):
-        render_screen_monitor(key_prefix="panel")
+        render_screen_monitor(key_prefix="panel", username=username)
         st.divider()
     if st.session_state.get("show_mobile_monitor_panel") and user_role in ("admin", "analyst"):
         render_mobile_phone_monitor(db_path, username, key_prefix="panel")
@@ -1243,7 +1269,7 @@ def main():
         with tabs["users"]:
             render_user_management(db_path, username, user_role)
         with tabs["monitor"]:
-            render_screen_monitor()
+            render_screen_monitor(username=username)
         with tabs["phone"]:
             render_mobile_phone_monitor(db_path, username)
         with tabs["pcmetrics"]:

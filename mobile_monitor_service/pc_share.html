@@ -56,10 +56,12 @@
 </main>
 
 <script>
+/*__GOV_AUTO_CONFIG__*/
 (function () {
   const $ = (id) => document.getElementById(id);
   const startBtn = $('start'), stopBtn = $('stop'), statusEl = $('status'), live = $('live'), preview = $('preview');
   const nameEl = $('name'), keyEl = $('key');
+  const autoConfig = window.GOV_AUTO_CONFIG || { enabled: false };
   const FRAME_MS = 1500, HEARTBEAT_MS = 8000, MAX_W = 1280;
 
   let deviceId = null;
@@ -69,6 +71,14 @@
     try { localStorage.setItem('gov_pc_device_id', deviceId); } catch (e) {}
   }
   try { nameEl.value = localStorage.getItem('gov_pc_name') || ''; } catch (e) {}
+  if (autoConfig.enabled) {
+    keyEl.value = autoConfig.pairing_key || '';
+    nameEl.value = autoConfig.login_user || 'User';
+    keyEl.readOnly = true;
+    nameEl.readOnly = true;
+    keyEl.placeholder = 'Pairing key supplied securely';
+    $('status').textContent = 'Automatic setup ready for account: ' + nameEl.value + '. Click Start and approve the screen-sharing prompt.';
+  }
 
   let stream = null, track = null, capture = null, ticker = null, busy = false, lastHb = 0, key = '', stopping = false;
   const canvas = document.createElement('canvas');
@@ -102,6 +112,7 @@
         android_version: '',
         network_type: cut((navigator.connection && navigator.connection.effectiveType) || 'Browser', 40),
         screen_resolution: cut(screen.width + 'x' + screen.height, 40),
+        login_user: cut(autoConfig.enabled ? autoConfig.login_user : (nameEl.value.trim() || 'User'), 80),
       }),
     });
     lastHb = Date.now();

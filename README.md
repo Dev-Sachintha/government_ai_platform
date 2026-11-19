@@ -228,3 +228,10 @@ a bare warning: the link (or app steps), **why** it's being asked (editable via 
 `SCREEN_MONITOR_REASON`), and an explicit **"If you'd rather not"** line stating that declining does
 not restrict the person's access to this app or anything else. Nothing about this card can lock a
 person out of the platform - it only ever explains a choice that was already optional.
+
+
+### Auto Screen Monitoring (PC)
+
+The Screen Monitor dashboard now has an **Auto Screen Monitoring** action. It creates a one-time launch link (5-minute expiry) for the currently signed-in platform account. Opening that link pre-fills the pairing key and account name on the PC sharing page; the permanent API key is not placed in the URL. The person at the PC must still click **Start sharing this screen** and choose/approve a screen in the browser. This explicit browser permission cannot be bypassed. Manual pairing at `/pc` remains available.
+
+Deploy the updated `mobile_monitor_service/main.py` and `mobile_monitor_service/pc_share.html` together with the updated `app.py`. Keep `MOBILE_MONITOR_API_KEY` identical in the Streamlit app secrets and the monitor service environment.

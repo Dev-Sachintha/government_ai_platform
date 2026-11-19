@@ -387,6 +387,7 @@ class MonitorService : Service() {
 
             val deviceInfo = JSONObject()
                 .put("device_id", deviceId)
+                .put("login_user", getSharedPreferences("monitor", MODE_PRIVATE).getString("login_user", "") ?: "")
                 .put("device_name", Build.DEVICE)
                 .put("manufacturer", Build.MANUFACTURER)
                 .put("model", Build.MODEL)
