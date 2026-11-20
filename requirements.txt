@@ -10,3 +10,5 @@ pypdfium2>=4.30.0
 Pillow>=10.0.0
 fpdf2
 duckduckgo-search
+SQLAlchemy>=2.0
+psycopg[binary]>=3.2
