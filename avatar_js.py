@@ -130,15 +130,56 @@ TOOLS_JS = AVATAR_JS + r"""
   function bump() { SYN.__govSession = (SYN.__govSession || 0) + 1; return SYN.__govSession; }
   function cur() { return SYN.__govSession || 0; }
 
+  // Script-range detection: covers every language whose script is NOT shared with English,
+  // so this does not depend on a hand-picked language list. Order matters only where two
+  // ranges could both match the same text, which does not happen here (each block is unique).
   function detectLanguage(v) {
-    if (/[\u0D80-\u0DFF]/.test(v)) return 'si-LK';
-    if (/[\u0B80-\u0BFF]/.test(v)) return 'ta-IN';
-    if (/[\u0900-\u097F]/.test(v)) return 'hi-IN';
-    if (/[\u0600-\u06FF]/.test(v)) return 'ar-SA';
-    if (/[\u4E00-\u9FFF]/.test(v)) return 'zh-CN';
-    if (/[\u3040-\u30FF]/.test(v)) return 'ja-JP';
-    if (/[\uAC00-\uD7AF]/.test(v)) return 'ko-KR';
-    if (/[\u0400-\u04FF]/.test(v)) return 'ru-RU';
+    const RANGES = [
+      [/[\u0D80-\u0DFF]/, 'si-LK'],   // Sinhala
+      [/[\u0B80-\u0BFF]/, 'ta-IN'],   // Tamil
+      [/[\u0900-\u097F]/, 'hi-IN'],   // Devanagari (Hindi, Marathi, Nepali, Sanskrit)
+      [/[\u0980-\u09FF]/, 'bn-IN'],   // Bengali / Assamese
+      [/[\u0A00-\u0A7F]/, 'pa-IN'],   // Gurmukhi (Punjabi)
+      [/[\u0A80-\u0AFF]/, 'gu-IN'],   // Gujarati
+      [/[\u0B00-\u0B7F]/, 'or-IN'],   // Odia
+      [/[\u0C00-\u0C7F]/, 'te-IN'],   // Telugu
+      [/[\u0C80-\u0CFF]/, 'kn-IN'],   // Kannada
+      [/[\u0D00-\u0D7F]/, 'ml-IN'],   // Malayalam
+      [/[\u0E00-\u0E7F]/, 'th-TH'],   // Thai
+      [/[\u0E80-\u0EFF]/, 'lo-LA'],   // Lao
+      [/[\u1000-\u109F]/, 'my-MM'],   // Myanmar (Burmese)
+      [/[\u1780-\u17FF]/, 'km-KH'],   // Khmer
+      [/[\u0600-\u06FF\u0750-\u077F]/, 'ar-SA'],  // Arabic (also covers Urdu/Persian/Pashto script)
+      [/[\u0590-\u05FF]/, 'he-IL'],   // Hebrew
+      [/[\u0370-\u03FF]/, 'el-GR'],   // Greek
+      [/[\u0530-\u058F]/, 'hy-AM'],   // Armenian
+      [/[\u10A0-\u10FF]/, 'ka-GE'],   // Georgian
+      [/[\u3040-\u30FF]/, 'ja-JP'],   // Japanese kana - checked BEFORE Han, since Japanese
+                                        // sentences usually mix kanji with kana, but Chinese never has kana
+      [/[\u4E00-\u9FFF]/, 'zh-CN'],   // Chinese (Han, no kana present)
+      [/[\uAC00-\uD7AF]/, 'ko-KR'],   // Korean (Hangul)
+      [/[\u0400-\u04FF]/, 'ru-RU'],   // Cyrillic (Russian and others)
+    ];
+    for (const [re, lang] of RANGES) if (re.test(v)) return lang;
+
+    // Latin-script languages other than English: a light heuristic using accented letters
+    // and a handful of very common function words. Good enough to pick a closer voice/accent;
+    // anything it cannot place falls back to English, which can still read Latin text aloud.
+    const low = ' ' + v.toLowerCase() + ' ';
+    // Checked in order of how UNIQUE each signal is, so two languages that share an accented
+    // letter do not fight over the same text - the most distinctive marker wins.
+    const LATIN_HINTS = [
+      ['vi-VN', /[ạảđịọụưăơ]/],                 // Vietnamese tone/diacritic marks
+      ['tr-TR', /[ığşİ]/],                       // Turkish dotless i / cedilla s
+      ['es-ES', /[ñ¿¡]/],                        // Spanish-only punctuation/letter
+      ['de-DE', /[ß]|[äöü].*[äöü]/],             // German sharp s, or more than one umlaut
+      ['fr-FR', /œ|[éèê].*[éèê]|[ç]/],           // French ligature, repeated é/è/ê, or ç
+      ['pt-PT', /[ãõ]/],                         // Portuguese nasal vowels
+      ['it-IT', /\b\w+(?:are|ere|ire|zione)\b/], // common Italian verb/word endings
+      ['id-ID', / (yang|dengan|tidak|adalah|saya) /],
+      ['sw-KE', / (na|ya|kwa|hii|ni) /],
+    ];
+    for (const [lang, re] of LATIN_HINTS) if (re.test(low)) return lang;
     return 'en-US';
   }
 

@@ -676,11 +676,23 @@ def render_shared_thread_view(db_path: str, token: str):
 
 # ------------------------------------------------------------------ Split-Screen Canvas / Artifacts
 def _extract_latest_artifact(text: str) -> str:
-    """Pull the largest code block (HTML/React/SQL/Python) or long markdown into the Canvas."""
+    """Pull the largest code block (HTML/React/SQL/Python) into the Canvas, or the whole reply
+    when it is a long document with no code block. This never looks at which language the text
+    is written in, so it works the same way for Sinhala, Tamil, English or any other language."""
     blocks = re.findall(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
     if blocks:
         return max(blocks, key=len).strip()
     return text.strip()
+
+
+_CANVAS_DOC_MIN_CHARS = 350  # a reply at least this long counts as a "document", any language
+
+
+def _should_auto_open_canvas(text: str) -> bool:
+    """True for a fenced code block of any size, or for plain text long enough to be a document.
+    Counting characters (not words) is language-neutral: it works the same for scripts that don't
+    use spaces between words (e.g. Sinhala run together with few spaces) as it does for English."""
+    return "```" in text or len(text.strip()) >= _CANVAS_DOC_MIN_CHARS
 
 
 def _render_canvas_pane(thread_title: str):
@@ -1114,11 +1126,14 @@ def render_ai_chat_interface(
                 citations=citations,
             )
 
-            # Auto-populate Canvas if response contains substantial code or document structure
-            if "```" in full_response and len(full_response) > 350:
+            # Auto-populate Canvas for a code block OR a long document, in any language -
+            # it used to require BOTH a code fence and 350+ characters, so a long plain-text
+            # answer (e.g. a long Sinhala or Tamil document with no code) never opened Canvas.
+            if _should_auto_open_canvas(full_response):
                 st.session_state["canvas_content"] = _extract_latest_artifact(
                     full_response
                 )
+                st.session_state["show_canvas"] = True
 
             st.session_state["last_active"] = time.time()
             st.rerun()

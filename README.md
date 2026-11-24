@@ -235,3 +235,20 @@ person out of the platform - it only ever explains a choice that was already opt
 The Screen Monitor dashboard now has an **Auto Screen Monitoring** action. It creates a one-time launch link (5-minute expiry) for the currently signed-in platform account. Opening that link pre-fills the pairing key and account name on the PC sharing page; the permanent API key is not placed in the URL. The person at the PC must still click **Start sharing this screen** and choose/approve a screen in the browser. This explicit browser permission cannot be bypassed. Manual pairing at `/pc` remains available.
 
 Deploy the updated `mobile_monitor_service/main.py` and `mobile_monitor_service/pc_share.html` together with the updated `app.py`. Keep `MOBILE_MONITOR_API_KEY` identical in the Streamlit app secrets and the monitor service environment.
+
+## Fix: Listen and Canvas for every language (not just English)
+- **🔊 Listen** used to recognise only Sinhala, Tamil, Hindi, Arabic, Chinese, Japanese, Korean and
+  Russian by their script, and silently read anything else as English. `avatar_js.py`'s
+  `detectLanguage()` now also recognises Bengali, Punjabi, Gujarati, Odia, Telugu, Kannada,
+  Malayalam, Thai, Lao, Burmese, Khmer, Hebrew, Greek, Armenian and Georgian by their script, plus
+  a light accent/word heuristic for a few Latin-script languages (French, German, Spanish,
+  Portuguese, Italian, Vietnamese, Turkish, Indonesian, Swahili). Very short, accent-free sentences
+  in a Latin-script language can still fall back to English — a full multi-sentence AI answer
+  almost always carries enough of a language's own accents/words to be detected correctly.
+- **🎨 Canvas** used to auto-open only when a reply BOTH was over 350 characters AND contained a
+  &#96;&#96;&#96; code fence, so a long plain-text document (a letter, a report, an essay) with no
+  code in it never opened Canvas automatically, in any language. `chat_app.py`'s
+  `_should_auto_open_canvas()` now opens Canvas for a code block of any size, OR for any reply at
+  least 350 characters long, regardless of script — this is a plain character count, not an
+  English-only word/space check, so Sinhala and Tamil documents (which often run together with
+  fewer spaces than English) are not penalised.
