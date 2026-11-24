@@ -183,6 +183,33 @@ TOOLS_JS = AVATAR_JS + r"""
     return 'en-US';
   }
 
+  // Friendly names for status messages. Covers every code detectLanguage() can return,
+  // for ANY language - not just Sinhala - so the same message works for all of them.
+  const LANG_NAMES = {
+    'si-LK': 'Sinhala', 'ta-IN': 'Tamil', 'hi-IN': 'Hindi', 'bn-IN': 'Bengali', 'pa-IN': 'Punjabi',
+    'gu-IN': 'Gujarati', 'or-IN': 'Odia', 'te-IN': 'Telugu', 'kn-IN': 'Kannada', 'ml-IN': 'Malayalam',
+    'th-TH': 'Thai', 'lo-LA': 'Lao', 'my-MM': 'Burmese', 'km-KH': 'Khmer', 'ar-SA': 'Arabic',
+    'he-IL': 'Hebrew', 'el-GR': 'Greek', 'hy-AM': 'Armenian', 'ka-GE': 'Georgian', 'zh-CN': 'Chinese',
+    'ja-JP': 'Japanese', 'ko-KR': 'Korean', 'ru-RU': 'Russian', 'vi-VN': 'Vietnamese', 'tr-TR': 'Turkish',
+    'de-DE': 'German', 'fr-FR': 'French', 'pt-PT': 'Portuguese', 'es-ES': 'Spanish', 'it-IT': 'Italian',
+    'id-ID': 'Indonesian', 'sw-KE': 'Swahili', 'en-US': 'English',
+  };
+  function langName(code) { return LANG_NAMES[code] || code; }
+
+  // speechSynthesis.getVoices() is often empty for a few hundred ms after the page loads, because
+  // the browser fetches the voice list asynchronously - calling it too early makes EVERY language
+  // look like it has no installed voice. This waits for the real list (or gives up after 1.2s).
+  function voicesReady() {
+    const list = SYN.speechSynthesis.getVoices();
+    if (list && list.length) return Promise.resolve(list);
+    return new Promise(function (resolve) {
+      let done = false;
+      const finish = function () { if (done) return; done = true; resolve(SYN.speechSynthesis.getVoices() || []); };
+      try { SYN.speechSynthesis.addEventListener('voiceschanged', finish, { once: true }); } catch (e) {}
+      setTimeout(finish, 1200);
+    });
+  }
+
   function cleanForSpeech(t) {
     return t.replace(/```[\s\S]*?```/g, ' ').replace(/https?:\/\/\S+/g, ' ')
             .replace(/[#*_`>|~]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -227,13 +254,16 @@ TOOLS_JS = AVATAR_JS + r"""
     try { avatar = getAvatar(); avatar.start(); } catch (e) { avatar = null; }
     setStatus(root, 'Starting…');
 
-    function pickVoice() {
-      const voices = SYN.speechSynthesis.getVoices() || [];
+    function findVoice(voices) {
       const base = language.split('-')[0].toLowerCase();
-      return voices.find(function (v) { return v.lang && v.lang.toLowerCase().startsWith(base); }) || null;
+      // Prefer an exact match (e.g. "si-LK"), then fall back to the same language family
+      // (e.g. any "si-*" voice) so a slightly different region code still counts as installed.
+      return voices.find(function (v) { return v.lang && v.lang.toLowerCase() === language.toLowerCase(); })
+          || voices.find(function (v) { return v.lang && v.lang.toLowerCase().startsWith(base); })
+          || null;
     }
 
-    function next(i) {
+    function next(i, voice, hadVoice) {
       if (mySession !== cur()) return;
       if (i >= pieces.length) {
         setStatus(root, '');
@@ -242,22 +272,37 @@ TOOLS_JS = AVATAR_JS + r"""
       }
       const u = new SYN.SpeechSynthesisUtterance(pieces[i]);
       u.lang = language; u.rate = 1;
-      const v = pickVoice(); if (v) u.voice = v;
-      u.onstart = function () { if (mySession === cur()) setStatus(root, 'Speaking (' + language + ')…'); };
+      if (voice) u.voice = voice;
+      u.onstart = function () {
+        if (mySession !== cur()) return;
+        setStatus(root, hadVoice
+          ? 'Speaking (' + langName(language) + ')…'
+          : 'Speaking (' + langName(language) + ')… this device has no ' + langName(language) +
+            ' voice installed, so it may sound wrong or use a different accent.');
+      };
       u.onboundary = function () { if (avatar) avatar.pulse(); };
-      u.onend = function () { next(i + 1); };
+      u.onend = function () { next(i + 1, voice, hadVoice); };
       u.onerror = function (ev) {
         if (mySession !== cur()) return;
         if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
-        setStatus(root, 'Speech error: ' + (ev && ev.error ? ev.error : 'unknown') +
-          (language !== 'en-US' ? ' (is a ' + language + ' voice installed?)' : ''));
+        const reason = ev && ev.error ? ev.error : 'unknown';
+        setStatus(root, 'Could not speak this ' + langName(language) + ' text (' + reason + ').' +
+          (hadVoice ? '' : ' No ' + langName(language) + ' voice is installed on this device - on ' +
+            'Android: Settings > System > Languages & input > Text-to-speech output > install the ' +
+            langName(language) + ' voice; on a computer, install that language in Chrome/Windows/macOS ' +
+            'text-to-speech settings.'));
         if (avatar) avatar.stop();
       };
       SYN.speechSynthesis.speak(u);
       if (SYN.speechSynthesis.paused) SYN.speechSynthesis.resume();
     }
-    // Chrome needs a short pause between cancel() and speak().
-    setTimeout(function () { next(0); }, 120);
+
+    voicesReady().then(function (voices) {
+      if (mySession !== cur()) return;
+      const voice = findVoice(voices);
+      // Chrome needs a short pause between cancel() and speak().
+      setTimeout(function () { next(0, voice, !!voice); }, 120);
+    });
   }
 
   async function copyText(root, text) {

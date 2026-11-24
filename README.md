@@ -252,3 +252,17 @@ Deploy the updated `mobile_monitor_service/main.py` and `mobile_monitor_service/
   least 350 characters long, regardless of script — this is a plain character count, not an
   English-only word/space check, so Sinhala and Tamil documents (which often run together with
   fewer spaces than English) are not penalised.
+
+## Fix: Listen now actually speaks in the answer's own language, for every language
+Two separate bugs were stacked on top of each other, for Sinhala and every other non-English language:
+1. **Voices loaded too late.** `speechSynthesis.getVoices()` returns an empty list for the first
+   fraction of a second after the page loads; Listen used to call it immediately, so it almost
+   always "found" no matching voice even when one existed. It now waits for the real voice list
+   (`voicesReady()` in `avatar_js.py`) before picking one, up to 1.2s.
+2. **Silent failure when no voice is installed.** If the device genuinely has no Sinhala/Tamil/
+   etc. voice, the browser used to either stay silent or substitute a wrong accent with no
+   explanation. Listen now says exactly that, by name, for whichever language was detected (not
+   hard-coded to Sinhala), and tells the person how to install that language's voice on Android or
+   on a desktop browser.
+This generalises to every language `detectLanguage()` can return, so the same fix covers Sinhala,
+Tamil, and any language added later - nothing here is Sinhala-specific.
