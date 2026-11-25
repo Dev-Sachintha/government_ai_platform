@@ -151,7 +151,7 @@ def _asset_data_uris():
         im.save(buf, "JPEG", quality=quality, optimize=True)
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
-    return {"bg": uri("background.jpg", 1280, 72), "avatar": uri("assistant_profile.jpg", 720, 72) or uri("avatar.jpg", 720, 72)}
+    return {"bg": uri("background.jpg", 1280, 72), "avatar": uri("avatar.jpg", 720, 72) or uri("assistant_profile.jpg", 720, 72)}
 
 
 def render_assets():
@@ -165,4 +165,4 @@ def render_assets():
         "if(!s){s=d.createElement('style');s.id='gov-assets-style';d.head.appendChild(s);}"
         "s.textContent=':root{--gov-bg:url(\\''+B+'\\')}';}})();"
     )
-    components.html("<!doctype html><html><body><script>" + script + "</script></body></html>", height=0)
+    components.html("<!doctype html><html><body><script>" + script + "</script></body></html>", height=1)
