@@ -9,6 +9,7 @@ import html as _html
 import io
 import json
 import os
+import wave
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -54,6 +55,77 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "</div><script>" + TOOLS_JS + "</script></body></html>"
     )
     components.html(page, height=46)
+
+
+def _split_sinhala_tts_text(text: str, max_chars: int = 2400) -> list[str]:
+    """Split long text at paragraph/sentence/word boundaries under the API limit."""
+    remaining = (text or "").strip()
+    chunks = []
+    while len(remaining) > max_chars:
+        window = remaining[: max_chars + 1]
+        # Prefer paragraph or sentence boundaries, then fall back to a word boundary.
+        candidates = [
+            window.rfind("\n"),
+            window.rfind(". "),
+            window.rfind("! "),
+            window.rfind("? "),
+            window.rfind("।"),
+        ]
+        cut = max(candidates)
+        if cut >= max_chars // 2:
+            if remaining[cut] in ".!?।":
+                cut += 1
+        else:
+            cut = window.rfind(" ")
+            if cut < max_chars // 2:
+                cut = max_chars
+        part = remaining[:cut].strip()
+        if not part:
+            cut = max_chars
+            part = remaining[:cut].strip()
+        chunks.append(part)
+        remaining = remaining[cut:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _combine_sinhala_wav_parts(audio_parts: list[bytes]) -> bytes:
+    """Join compatible PCM WAV responses into one playable WAV file."""
+    if not audio_parts:
+        raise ValueError("The Sinhala TTS server returned no audio.")
+    if len(audio_parts) == 1:
+        return audio_parts[0]
+
+    output = io.BytesIO()
+    reference = None
+    audio_frames = []
+    for index, audio_bytes in enumerate(audio_parts, start=1):
+        try:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+                params = wav_file.getparams()
+                if reference is None:
+                    reference = params
+                elif (
+                    params.nchannels != reference.nchannels
+                    or params.sampwidth != reference.sampwidth
+                    or params.framerate != reference.framerate
+                    or params.comptype != reference.comptype
+                ):
+                    raise ValueError("Sinhala audio parts use incompatible WAV formats.")
+                audio_frames.append(wav_file.readframes(wav_file.getnframes()))
+        except (wave.Error, EOFError) as exc:
+            raise ValueError(f"Audio part {index} is not a valid WAV file: {exc}") from exc
+
+    with wave.open(output, "wb") as combined:
+        combined.setparams(reference)
+        silence_frames = max(1, int(reference.framerate * 0.12))
+        silence = b"\x00" * silence_frames * reference.nchannels * reference.sampwidth
+        for index, frames in enumerate(audio_frames):
+            if index:
+                combined.writeframesraw(silence)
+            combined.writeframesraw(frames)
+    return output.getvalue()
 
 
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
@@ -121,12 +193,15 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                 st.secrets.get("SINHALA_TTS_API_KEY", os.getenv("SINHALA_TTS_API_KEY", ""))
             ).strip()
 
-            if len(speech_text) > 2500:
-                st.warning("This Sinhala voice supports up to 2,500 characters per request. Use Translate to create a shorter version.")
+            tts_chunks = _split_sinhala_tts_text(speech_text)
+            if len(tts_chunks) > 1:
+                st.caption(
+                    f"Long Sinhala text will be split automatically into {len(tts_chunks)} audio parts."
+                )
             if st.button(
                 "🔊 Listen (Sinhala)",
                 key=f"sinhala_listen_{msg_index}",
-                disabled=len(speech_text) > 2500,
+                disabled=not tts_chunks,
             ):
                 if not service_url or not api_key:
                     st.error(
@@ -135,19 +210,34 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                     )
                 else:
                     try:
-                        with st.spinner("Generating Sinhala audio…"):
+                        audio_parts = []
+                        progress = st.progress(0, text=f"Generating Sinhala audio (0/{len(tts_chunks)})…")
+                        for part_number, chunk in enumerate(tts_chunks, start=1):
+                            progress.progress(
+                                (part_number - 1) / len(tts_chunks),
+                                text=f"Generating Sinhala audio ({part_number}/{len(tts_chunks)})…",
+                            )
                             response = requests.post(
                                 service_url + "/v1/tts",
-                                json={"text": speech_text},
+                                json={"text": chunk},
                                 headers={"Authorization": f"Bearer {api_key}"},
                                 timeout=(15, 240),
                             )
                             response.raise_for_status()
                             if not response.content.startswith(b"RIFF") or b"WAVE" not in response.content[:16]:
-                                raise ValueError("The Sinhala TTS server did not return a valid WAV file.")
-                            st.session_state[audio_key] = response.content
+                                raise ValueError(
+                                    f"Audio part {part_number} is not a valid WAV file."
+                                )
+                            audio_parts.append(response.content)
+                        progress.progress(1.0, text="Combining Sinhala audio…")
+                        st.session_state[audio_key] = _combine_sinhala_wav_parts(audio_parts)
+                        progress.empty()
+                        st.success(f"Sinhala audio is ready ({len(tts_chunks)} part(s)).")
                     except requests.Timeout:
-                        st.error("Sinhala TTS timed out. The server may be starting or processing a long answer. Try again.")
+                        st.error(
+                            "Sinhala TTS timed out while generating an audio part. "
+                            "Try again; the generated audio has not been saved."
+                        )
                     except requests.RequestException as exc:
                         detail = ""
                         try:
