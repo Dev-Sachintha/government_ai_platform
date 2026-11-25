@@ -58,7 +58,7 @@ def _speech_frame(text: str, language: str, msg_index: int):
     components.html(page, height=46)
 
 
-def _split_sinhala_tts_text(text: str, max_chars: int = 2400) -> list[str]:
+def _split_sinhala_tts_text(text: str, max_chars: int = 400) -> list[str]:
     """Split long text at paragraph/sentence/word boundaries under the API limit."""
     remaining = (text or "").strip()
     chunks = []
