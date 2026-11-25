@@ -238,14 +238,17 @@ TOOLS_JS = AVATAR_JS + r"""
     if (el) el.textContent = msg;
   }
 
-  function speak(root, text) {
+  function speak(root, text, requestedLanguage) {
     if (!('speechSynthesis' in SYN) || !('SpeechSynthesisUtterance' in SYN)) {
       setStatus(root, 'Speech is not supported by this browser. Use Chrome or Edge.');
       return;
     }
     const spoken = cleanForSpeech(text);
     if (!spoken) { setStatus(root, 'Nothing to read.'); return; }
-    const language = detectLanguage(spoken);
+    // Respect the language selected in the Listening language menu.
+    // "auto" keeps script-based detection for the original answer.
+    const language = requestedLanguage && requestedLanguage !== 'auto'
+      ? requestedLanguage : detectLanguage(spoken);
     const pieces = chunkText(spoken);
     const mySession = bump();
 
@@ -330,9 +333,10 @@ TOOLS_JS = AVATAR_JS + r"""
     if (!root) return;
     const action = btn.getAttribute('data-action');
     const text = root.getAttribute('data-text') || '';
+    const requestedLanguage = root.getAttribute('data-lang') || 'auto';
     try {
       if (action === 'copy') copyText(root, text);
-      else if (action === 'listen') speak(root, text);
+      else if (action === 'listen') speak(root, text, requestedLanguage);
       else if (action === 'stop') stopSpeech(root);
     } catch (e) { setStatus(root, 'Error: ' + (e && e.message ? e.message : e)); }
   }
