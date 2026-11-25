@@ -161,6 +161,52 @@ header[data-testid="stHeader"] { background: transparent; }
   .ui-hero h1 { font-size: 1.7rem; }
   .ui-hero .ui-chip { right: 14px; bottom: 12px; }
 }
+
+/* ---------- Responsive layouts: desktop, tablet and phone ---------- */
+@media (min-width: 1200px) {
+  .block-container { max-width: 1440px !important; margin: 0 auto !important; }
+  .ui-hero { min-height: 390px; padding: 52px 5vw; }
+}
+@media (min-width: 769px) and (max-width: 1199px) {
+  .block-container { padding: 1.25rem 1.5rem 3rem !important; }
+  .ui-hero { min-height: 330px; padding: 38px 32px; margin-left: -1.5rem; margin-right: -1.5rem; }
+  .ui-hero h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); }
+  div[data-baseweb="tab-list"] { width: 100%; border-radius: 16px; }
+  button[data-baseweb="tab"] { padding: 9px 14px !important; }
+  [data-testid="stHorizontalBlock"] { flex-wrap: wrap; gap: 1rem; }
+}
+@media (max-width: 768px) {
+  .block-container { padding: .75rem .85rem 2.5rem !important; }
+  [data-testid="stSidebar"] { min-width: 0; }
+  .ui-hero { min-height: 260px; padding: 24px 18px; margin: 0 -.85rem 18px -.85rem; }
+  .ui-hero .ui-hero-inner { max-width: 100%; }
+  .ui-hero h1 { font-size: clamp(1.45rem, 7vw, 2rem); line-height: 1.15; }
+  .ui-hero p { font-size: .95rem; max-width: 36ch; }
+  .ui-hero .ui-hero-kicker { font-size: .68rem; letter-spacing: .1em; padding: 5px 10px; }
+  .ui-hero .ui-chip { position: static; display: inline-block; margin-top: 18px; font-size: .75rem; }
+  div[data-baseweb="tab-list"] { width: 100%; max-width: 100%; border-radius: 14px; gap: 4px; }
+  button[data-baseweb="tab"] { padding: 9px 12px !important; font-size: .88rem; white-space: nowrap; }
+  [data-testid="stHorizontalBlock"] { flex-direction: column !important; gap: .65rem !important; }
+  [data-testid="stHorizontalBlock"] > [data-testid="column"] { width: 100% !important; flex: 1 1 100% !important; min-width: 0 !important; }
+  .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button { min-height: 44px; width: 100%; }
+  .stTextInput input, .stTextArea textarea, .stNumberInput input { font-size: 16px !important; }
+  [data-testid="stChatMessage"] { padding: 12px; border-radius: 14px; }
+  [data-testid="stChatMessageAvatarAssistant"] { width: 2.1rem; height: 2.1rem; }
+  [data-testid="stDataFrame"] { max-width: 100%; overflow-x: auto; }
+  [data-testid="stMetric"] { padding: 12px; }
+}
+@media (max-width: 480px) {
+  .block-container { padding-left: .65rem !important; padding-right: .65rem !important; }
+  .ui-hero { margin-left: -.65rem; margin-right: -.65rem; min-height: 230px; }
+  .ui-hero h1 { font-size: 1.45rem; }
+  div[data-baseweb="tab-list"] { justify-content: flex-start; }
+  button[data-baseweb="tab"] { padding: 8px 10px !important; font-size: .82rem; }
+  [data-testid="stChatMessage"] { margin-bottom: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
 </style>
 """
 
