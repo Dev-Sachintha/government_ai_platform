@@ -257,7 +257,8 @@ TOOLS_JS = AVATAR_JS + r"""
       }
       const q = encodeURIComponent(pieces[index++]);
       const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' + encodeURIComponent(base) + '&q=' + q;
-      const audio = new Audio(url);
+      const AudioCtor = SYN.Audio || Audio;
+      const audio = new AudioCtor(url);
       cloudAudio = audio;
       audio.onended = playNext;
       audio.onerror = function () {
@@ -339,18 +340,17 @@ TOOLS_JS = AVATAR_JS + r"""
       if (SYN.speechSynthesis.paused) SYN.speechSynthesis.resume();
     }
 
-    voicesReady().then(function (voices) {
-      if (mySession !== cur()) return;
-      const voice = findVoice(voices);
-      // If this device has no matching voice, use online audio instead of letting
-      // the browser silently read Sinhala/other scripts with an unrelated accent.
-      if (!voice) {
-        speakCloud(root, pieces, language, mySession, avatar);
-        return;
-      }
-      // Chrome needs a short pause between cancel() and speak().
-      setTimeout(function () { next(0, voice, true); }, 120);
-    });
+    // Check synchronously while the Listen click still has browser user-activation.
+    // If no matching voice is present, start the online audio immediately; waiting
+    // for voiceschanged / a Promise would make browsers reject audio.play() as autoplay.
+    const availableVoices = SYN.speechSynthesis.getVoices() || [];
+    const immediateVoice = findVoice(availableVoices);
+    if (!immediateVoice) {
+      speakCloud(root, pieces, language, mySession, avatar);
+      return;
+    }
+    // Chrome needs a short pause between cancel() and speak().
+    setTimeout(function () { next(0, immediateVoice, true); }, 120);
   }
 
   async function copyText(root, text) {
