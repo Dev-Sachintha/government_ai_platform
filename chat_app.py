@@ -10,6 +10,7 @@ import uuid
 import pandas as pd
 import pypdf
 import streamlit as st
+import streamlit.components.v1 as components
 
 import library
 import llm
@@ -629,9 +630,9 @@ def _avatar_for(role):
     return ASSISTANT_AVATAR if role == "assistant" else None
 
 
-def _render_message_tools(text: str, msg_index: int):
-    """Copy / Listen / Stop controls for an AI message (Listen shows the talking avatar)."""
-    _vui_tools(text, msg_index)
+def _render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
+    """Copy, translate-to-language, and listen controls for an AI message."""
+    _vui_tools(text, msg_index, llm_cfg)
 
 
 def _render_stt_bar(disabled: bool):
@@ -723,7 +724,8 @@ def _render_canvas_pane(thread_title: str):
         html_code = st.session_state["canvas_content"]
         if "<html" not in html_code.lower():
             html_code = f"<!DOCTYPE html><html><body style='font-family:sans-serif;padding:16px;'>{html_code}</body></html>"
-        st.html(f"<div style=\"height:460px; overflow:auto;\">{html_code}</div>", unsafe_allow_javascript=True)
+        # Isolated iframe supports HTML/CSS/JS consistently across Streamlit versions.
+        components.html(html_code, height=460, scrolling=True)
 
     # Export Canvas (.md, .pdf, .txt)
     c1, c2, c3 = st.columns(3)
@@ -963,7 +965,7 @@ def render_ai_chat_interface(
                                 )
                                 st.session_state["show_canvas"] = True
                                 st.rerun()
-                            _render_message_tools(msg["content"], idx)
+                            _render_message_tools(msg["content"], idx, active_llm_cfg)
 
         # --- PROMPT TEMPLATES, ATTACHMENTS, STT & CHAT INPUT ---
         with st.expander("📎 Attach Files / Images & Prompt Templates", expanded=False):
