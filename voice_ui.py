@@ -9,6 +9,7 @@ import html as _html
 import io
 import json
 import os
+import time
 import wave
 
 import streamlit as st
@@ -223,14 +224,49 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                                     f"{part_number}/{len(tts_chunks)} — please wait…"
                                 ),
                             )
-                            response = requests.post(
-                                service_url + "/v1/tts",
-                                json={"text": chunk},
-                                headers={"Authorization": f"Bearer {api_key}"},
-                                # Render free services can need time to wake and load
-                                # the Piper model; synthesis of long chunks is CPU-bound.
-                                timeout=(30, 600),
-                            )
+                            # Render free instances can be temporarily unavailable while
+                            # waking from idle or being replaced. Retry only transient
+                            # gateway/connection failures; do not repeat normal 4xx errors.
+                            response = None
+                            for attempt in range(4):
+                                try:
+                                    candidate = requests.post(
+                                        service_url + "/v1/tts",
+                                        json={"text": chunk},
+                                        headers={"Authorization": f"Bearer {api_key}"},
+                                        # Model inference is CPU-bound and can take several minutes.
+                                        timeout=(30, 600),
+                                    )
+                                except requests.ConnectionError:
+                                    if attempt == 3:
+                                        raise
+                                    wait_seconds = 5 * (attempt + 1)
+                                    st.warning(
+                                        f"Sinhala TTS service is reconnecting. "
+                                        f"Retrying in {wait_seconds} seconds "
+                                        f"({attempt + 1}/3)…"
+                                    )
+                                    time.sleep(wait_seconds)
+                                    continue
+
+                                if candidate.status_code in (502, 503, 504) and attempt < 3:
+                                    wait_seconds = 5 * (attempt + 1)
+                                    candidate.close()
+                                    st.warning(
+                                        f"Sinhala TTS service is temporarily unavailable "
+                                        f"(HTTP {candidate.status_code}). Retrying in "
+                                        f"{wait_seconds} seconds ({attempt + 1}/3)…"
+                                    )
+                                    time.sleep(wait_seconds)
+                                    continue
+
+                                response = candidate
+                                break
+
+                            if response is None:
+                                raise requests.ConnectionError(
+                                    "Sinhala TTS service could not be reached after retries."
+                                )
                             response.raise_for_status()
                             audio_bytes = response.content
                             if not audio_bytes.startswith(b"RIFF") or b"WAVE" not in audio_bytes[:16]:
