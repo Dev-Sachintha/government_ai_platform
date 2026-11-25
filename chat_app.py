@@ -858,32 +858,47 @@ def render_ai_chat_interface(
     conn.close()
     thread_title = t_row[0] if t_row else "Conversation"
 
-    exp1, exp2, exp3, exp4, _ = st.columns([1.1, 1.1, 1.1, 1.4, 3.3])
+    exp1, exp2, exp3, exp4, exp5, _ = st.columns([1, 1, 1.2, 1.1, 1.4, 2.3])
     full_md = f"# {thread_title}\n\n" + "\n\n---\n\n".join(
         f"**{m['role'].upper()}**:\n{m['content']}" for m in messages
     )
     exp1.download_button(
         "📥 Export MD",
-        data=full_md,
+        data=full_md.encode("utf-8-sig"),
         file_name=f"{thread_title}.md",
-        mime="text/markdown",
+        mime="text/markdown; charset=utf-8",
         use_container_width=True,
     )
     exp2.download_button(
         "📥 Export TXT",
-        data=full_md,
+        data=full_md.encode("utf-8-sig"),
         file_name=f"{thread_title}.txt",
-        mime="text/plain",
+        mime="text/plain; charset=utf-8",
         use_container_width=True,
     )
     exp3.download_button(
-        "📥 Export PDF",
-        data=_export_pdf_bytes(thread_title, full_md),
-        file_name=f"{thread_title}.pdf",
-        mime="application/pdf",
+        "📥 Export HTML",
+        data=_export_html_bytes(thread_title, full_md),
+        file_name=f"{thread_title}.html",
+        mime="text/html; charset=utf-8",
         use_container_width=True,
     )
-    with exp4:
+    if (thread_title + full_md).isascii():
+        exp4.download_button(
+            "📥 Export PDF",
+            data=_export_pdf_bytes(thread_title, full_md),
+            file_name=f"{thread_title}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        exp4.button(
+            "PDF via HTML",
+            disabled=True,
+            use_container_width=True,
+            help="Download HTML, open it in Chrome/Edge, then press Ctrl+P and choose Save as PDF.",
+        )
+    with exp5:
         with st.popover("🔗 Share Link", use_container_width=True):
             if st.button("Generate Public Read-Only Link", use_container_width=True):
                 tok = uuid.uuid4().hex[:12]
