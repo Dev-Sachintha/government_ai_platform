@@ -37,42 +37,23 @@ _TTS_LANGUAGES = {
 
 
 def _speech_frame(text: str, language: str, msg_index: int):
-    """Speech starts only after the user directly presses Listen inside the iframe."""
+    """Render Listen controls wired to the animated talking avatar in the parent page."""
     attr = _html.escape(text or "", quote=True)
+    lang = _html.escape(language or "auto", quote=True)
     page = (
         "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
         "button{background:#fff;border:1px solid rgba(128,128,128,.45);border-radius:999px;"
-        "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}</style></head><body>"
-        f"<div id='speech-{int(msg_index)}' data-text='{attr}' data-lang='{_html.escape(language)}' "
+        "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}"
+        ".gov-status{font-size:11px;opacity:.8}</style></head><body>"
+        f"<div id='speech-{int(msg_index)}' data-gov-tools data-text='{attr}' data-lang='{lang}' "
         "style='display:flex;align-items:center;gap:7px;padding:4px 2px;'>"
-        "<button id='copy'>📋 Copy</button><button id='speak'>🔊 Listen</button><button id='stop'>⏹ Stop</button>"
-        "<span id='status' role='status' aria-live='polite' style='font-size:11px;opacity:.8'></span>"
-        "</div><script>"
-        "(function(){const root=document.querySelector('[id^=speech-]');"
-        "const host=(function(){try{return window.parent&&window.parent.speechSynthesis?window.parent:window;}catch(e){return window;}})();"
-        "const text=root.dataset.text||'';"
-        "function detect(t){if(/[\\u0D80-\\u0DFF]/.test(t))return 'si-LK';if(/[\\u0B80-\\u0BFF]/.test(t))return 'ta-LK';"
-        "if(/[\\u0600-\\u06FF]/.test(t))return 'ar-SA';if(/[\\u0900-\\u097F]/.test(t))return 'hi-IN';return 'en-US';}"
-        "const lang=root.dataset.lang==='auto'?detect(text):root.dataset.lang;"
-        "function status(s){root.querySelector('#status').textContent=s;}"
-        "function stop(){try{host.speechSynthesis.cancel();}catch(e){}status('Stopped.');}"
-        "root.querySelector('#stop').addEventListener('click',stop);"
-        "root.querySelector('#copy').addEventListener('click',function(){"
-        "const clip=(host.navigator&&host.navigator.clipboard)?host.navigator.clipboard: navigator.clipboard;"
-        "if(clip&&clip.writeText){clip.writeText(text).then(()=>status('Copied.'),()=>status('Copy blocked by browser permissions.'));}"
-        "else{status('Clipboard is not supported in this browser.');}});"
-        "root.querySelector('#speak').addEventListener('click',function(){"
-        "if(!host.speechSynthesis||!host.SpeechSynthesisUtterance){status('Speech is not supported. Use Chrome or Edge.');return;}"
-        "stop();const clean=text.replace(/https?:\\/\\/\\S+/g,' link ').replace(/[\\#*\\x60>|~]/g,' ').trim();"
-        "if(!clean){status('Nothing to read.');return;}const chunks=clean.match(/.{1,170}(?:\\s|$)/g)||[clean];"
-        "let i=0;const voices=host.speechSynthesis.getVoices();const base=lang.split('-')[0].toLowerCase();"
-        "const voice=voices.find(v=>v.lang.toLowerCase()===lang.toLowerCase())||voices.find(v=>v.lang.toLowerCase().startsWith(base));"
-        "function next(){if(i>=chunks.length){status('Finished.');return;}const u=new host.SpeechSynthesisUtterance(chunks[i++]);"
-        "u.lang=lang;u.rate=1;if(voice)u.voice=voice;u.onstart=()=>status('Speaking '+lang+'…');u.onend=next;"
-        "u.onerror=e=>status('Speech error: '+e.error);host.speechSynthesis.speak(u);}next();"
-        "});})();</script></body></html>"
+        "<button type='button' data-action='copy'>📋 Copy</button>"
+        "<button type='button' data-action='listen'>🔊 Listen</button>"
+        "<button type='button' data-action='stop'>⏹ Stop</button>"
+        "<span class='gov-status' role='status' aria-live='polite'></span>"
+        "</div><script>" + TOOLS_JS + "</script></body></html>"
     )
-    components.html(page, height=42)
+    components.html(page, height=46)
 
 
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
