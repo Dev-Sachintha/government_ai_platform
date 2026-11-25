@@ -11,3 +11,4 @@ Pillow>=10.0.0
 fpdf2
 duckduckgo-search
 Markdown>=3.5
+uharfbuzz>=0.39.0
