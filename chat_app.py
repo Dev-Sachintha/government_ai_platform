@@ -649,7 +649,7 @@ code{{overflow-wrap:anywhere}} img{{max-width:100%}}
 
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
-from voice_ui import render_message_tools as _vui_tools, render_stt_bar as _vui_stt
+from voice_ui import render_message_tools as _vui_tools, render_stt_bar as _vui_stt, render_assets as _vui_assets
 
 _PROFILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "assistant_profile.jpg")
 ASSISTANT_AVATAR = _PROFILE_PATH if os.path.exists(_PROFILE_PATH) else "🤖"
@@ -672,6 +672,7 @@ def _render_stt_bar(disabled: bool):
 
 # ------------------------------------------------------------------ Public Share View
 def render_shared_thread_view(db_path: str, token: str):
+    _vui_assets()
     st.title("🔗 Shared AI Conversation")
     conn = sqlite3.connect(db_path)
     try:
@@ -803,6 +804,8 @@ def _render_canvas_pane(thread_title: str):
 def render_ai_chat_interface(
     db_path: str, llm_cfg: dict, user_role: str, username: str
 ):
+    # Publish the talking-avatar image to the parent page before Listen controls render.
+    _vui_assets()
     active_tid = st.session_state.get("active_thread_id")
     if not active_tid:
         active_tid = _create_thread(db_path, username)
