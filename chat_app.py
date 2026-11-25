@@ -631,7 +631,7 @@ def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
     pdf.multi_cell(0, 9, str(title))
     pdf.ln(4)
     pdf.set_font("NotoSinhala", size=10)
-    clean_text = re.sub(r"[#*\\x60]", "", str(markdown_text))
+    clean_text = re.sub(r"[#*`]", "", str(markdown_text))
     pdf.multi_cell(0, 7, clean_text)
     return bytes(pdf.output())
 
