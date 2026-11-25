@@ -121,7 +121,13 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                 st.secrets.get("SINHALA_TTS_API_KEY", os.getenv("SINHALA_TTS_API_KEY", ""))
             ).strip()
 
-            if st.button("🔊 Listen (Sinhala)", key=f"sinhala_listen_{msg_index}"):
+            if len(speech_text) > 2500:
+                st.warning("This Sinhala voice supports up to 2,500 characters per request. Use Translate to create a shorter version.")
+            if st.button(
+                "🔊 Listen (Sinhala)",
+                key=f"sinhala_listen_{msg_index}",
+                disabled=len(speech_text) > 2500,
+            ):
                 if not service_url or not api_key:
                     st.error(
                         "Sinhala TTS is not configured. Set SINHALA_TTS_URL and "
