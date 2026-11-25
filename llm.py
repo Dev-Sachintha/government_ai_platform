@@ -553,3 +553,64 @@ def resolve_vision_model(cfg: dict, preferred: str) -> str:
 def remember_vision_model(cfg: dict, model: str) -> None:
     if cfg.get("provider") == "openai":
         _working_vision[cfg.get("base_url", "")] = model
+
+
+def _translation_chunks(text: str, max_chars: int = 2800) -> list[str]:
+    """Split translation input at paragraph, sentence, and word boundaries."""
+    text = (text or "").strip()
+    chunks = []
+    while len(text) > max_chars:
+        window = text[:max_chars + 1]
+        candidates = [window.rfind("\\n\\n"), window.rfind(". "), window.rfind("! "), window.rfind("? "), window.rfind(" ")]
+        cut = max(candidates)
+        if cut < max_chars // 2:
+            cut = max_chars
+        elif window[cut:cut + 2] != "\\n\\n":
+            cut += 1
+        chunks.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def generate_translation(
+    cfg: dict, text: str, language_name: str,
+    fallback_cfg: dict | None = None, max_chars: int = 2800, retries: int = 3,
+) -> str:
+    """Translate in chunks, retry HTTP 429 with backoff, then use optional fallback."""
+    chunks = _translation_chunks(text, max_chars)
+    if not chunks:
+        raise LLMError("There is no text to translate.")
+    translated_parts = []
+    for index, chunk in enumerate(chunks, start=1):
+        prompt = (
+            f"Translate the following text into {language_name}. Preserve meaning, "
+            "headings, lists, numbers, URLs, names and formatting. Do not add explanations. "
+            "Keep code blocks unchanged. Part " + str(index) + " of " + str(len(chunks)) + ".\\n\\n" + chunk
+        )
+        result = None
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                result = generate(cfg, prompt, json_mode=False, temperature=0.1, max_tokens=3000, timeout=180).strip()
+                if not result:
+                    raise LLMError("The translation service returned an empty result.")
+                break
+            except LLMError as exc:
+                last_error = exc
+                limited = "rate limit" in str(exc).lower() or "429" in str(exc)
+                if not limited or attempt >= retries:
+                    break
+                time.sleep(min(2 ** (attempt + 1), 12))
+        if result is None and fallback_cfg and last_error and (
+            "rate limit" in str(last_error).lower() or "429" in str(last_error)
+        ):
+            try:
+                result = generate(fallback_cfg, prompt, json_mode=False, temperature=0.1, max_tokens=3000, timeout=180).strip()
+            except LLMError as fallback_error:
+                raise LLMError(f"Primary and fallback translation services failed. Primary: {last_error} Fallback: {fallback_error}")
+        if result is None:
+            raise last_error or LLMError("Translation failed.")
+        translated_parts.append(result)
+    return "\\n\\n".join(translated_parts)
