@@ -348,6 +348,13 @@ TOOLS_JS = AVATAR_JS + r"""
     const availableVoices = SYN.speechSynthesis.getVoices() || [];
     const immediateVoice = findVoice(availableVoices);
     if (!immediateVoice) {
+      // Sinhala is handled by the authenticated server-side Piper service in voice_ui.py.
+      // This iframe fallback remains available for other languages without local voices.
+      if (language.toLowerCase().startsWith('si-')) {
+        setStatus(root, 'Use the server-side Sinhala Listen button for Sinhala audio.');
+        if (avatar) avatar.stop();
+        return;
+      }
       speakCloud(root, pieces, language, mySession, avatar);
       return;
     }

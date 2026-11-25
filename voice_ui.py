@@ -102,7 +102,67 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
         with cols[1]:
             st.write("")
     if speech_text:
-        _speech_frame(speech_text, lang_code, msg_index)
+        # Sinhala is synthesized on the server; no browser voice or third-party
+        # browser TTS endpoint is required. The API key remains on the Streamlit server.
+        is_sinhala = lang_code == "si-LK" or (
+            lang_code == "auto" and any("\u0D80" <= ch <= "\u0DFF" for ch in speech_text)
+        )
+        if is_sinhala:
+            import hashlib
+            import requests
+
+            audio_key = "sinhala_tts_audio_" + hashlib.sha256(
+                speech_text.encode("utf-8")
+            ).hexdigest()[:24]
+            service_url = str(
+                st.secrets.get("SINHALA_TTS_URL", os.getenv("SINHALA_TTS_URL", ""))
+            ).strip().rstrip("/")
+            api_key = str(
+                st.secrets.get("SINHALA_TTS_API_KEY", os.getenv("SINHALA_TTS_API_KEY", ""))
+            ).strip()
+
+            if len(speech_text) > 2500:
+                st.warning("This Sinhala voice supports up to 2,500 characters per request. Use Translate to create a shorter version.")
+            if st.button(
+                "🔊 Listen (Sinhala)",
+                key=f"sinhala_listen_{msg_index}",
+                disabled=len(speech_text) > 2500,
+            ):
+                if not service_url or not api_key:
+                    st.error(
+                        "Sinhala TTS is not configured. Set SINHALA_TTS_URL and "
+                        "SINHALA_TTS_API_KEY in Streamlit Secrets."
+                    )
+                else:
+                    try:
+                        with st.spinner("Generating Sinhala audio…"):
+                            response = requests.post(
+                                service_url + "/v1/tts",
+                                json={"text": speech_text},
+                                headers={"Authorization": f"Bearer {api_key}"},
+                                timeout=(15, 240),
+                            )
+                            response.raise_for_status()
+                            if not response.content.startswith(b"RIFF") or b"WAVE" not in response.content[:16]:
+                                raise ValueError("The Sinhala TTS server did not return a valid WAV file.")
+                            st.session_state[audio_key] = response.content
+                    except requests.Timeout:
+                        st.error("Sinhala TTS timed out. The server may be starting or processing a long answer. Try again.")
+                    except requests.RequestException as exc:
+                        detail = ""
+                        try:
+                            detail = response.text[:300]
+                        except Exception:
+                            pass
+                        st.error(f"Sinhala TTS service request failed: {detail or exc}")
+                    except Exception as exc:
+                        st.error(f"Sinhala audio generation failed: {exc}")
+
+            audio_data = st.session_state.get(audio_key)
+            if audio_data:
+                st.audio(audio_data, format="audio/wav")
+        else:
+            _speech_frame(speech_text, lang_code, msg_index)
 
 
 _LANGS = [
