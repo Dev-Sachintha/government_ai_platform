@@ -598,23 +598,41 @@ def _parse_uploaded_attachments(files, llm_cfg: dict, vision_model: str) -> str:
 
 
 def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
-    """Generate a PDF only when its built-in font can represent every character."""
+    """Create a Unicode PDF with Noto Sans Sinhala and HarfBuzz text shaping."""
     from fpdf import FPDF
+    import tempfile
+    import requests
 
-    if not (title + markdown_text).isascii():
-        raise ValueError(
-            "This PDF font cannot represent Sinhala or other Unicode scripts. "
-            "Download the Unicode HTML file and use Print > Save as PDF in Chrome or Edge."
+    font_path = os.path.join(tempfile.gettempdir(), "NotoSansSinhala.ttf")
+    if not os.path.isfile(font_path) or os.path.getsize(font_path) < 10000:
+        font_url = (
+            "https://raw.githubusercontent.com/google/fonts/main/"
+            "ofl/notosanssinhala/NotoSansSinhala%5Bwdth%2Cwght%5D.ttf"
         )
+        response = requests.get(font_url, timeout=30)
+        response.raise_for_status()
+        if len(response.content) < 10000:
+            raise RuntimeError("Could not download the Unicode Sinhala PDF font.")
+        with open(font_path, "wb") as font_file:
+            font_file.write(response.content)
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_font("NotoSinhala", fname=font_path)
+    try:
+        pdf.set_text_shaping(use_shaping_engine=True, direction="ltr", script="Sinh", language="si")
+    except Exception as exc:
+        raise RuntimeError(
+            "Sinhala PDF text shaping is unavailable. Install the uharfbuzz dependency."
+        ) from exc
+
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.multi_cell(0, 8, title)
+    pdf.set_font("NotoSinhala", size=15)
+    pdf.multi_cell(0, 9, str(title))
     pdf.ln(4)
-    pdf.set_font("Helvetica", size=10)
-    pdf.multi_cell(0, 6, re.sub(r"[#*\x60]", "", markdown_text))
+    pdf.set_font("NotoSinhala", size=10)
+    clean_text = re.sub(r"[#*\\x60]", "", str(markdown_text))
+    pdf.multi_cell(0, 7, clean_text)
     return bytes(pdf.output())
 
 
@@ -782,22 +800,15 @@ def _render_canvas_pane(thread_title: str):
         mime="text/html; charset=utf-8",
         use_container_width=True,
     )
-    if (thread_title + content).isascii():
-        c4.download_button(
-            "⬇️ .PDF",
-            data=_export_pdf_bytes(thread_title, content),
-            file_name="canvas_draft.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    else:
-        c4.button(
-            "PDF unavailable for this language",
-            disabled=True,
-            use_container_width=True,
-            help="Download Unicode HTML, open it in Chrome/Edge, then press Ctrl+P and choose Save as PDF.",
-        )
-    st.caption("For Sinhala or other non-English scripts: download HTML, open it in Chrome/Edge, then press Ctrl+P → Save as PDF.")
+    if c4.download_button(
+        "⬇️ .PDF",
+        data=_export_pdf_bytes(thread_title, content),
+        file_name="canvas_draft.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        help="Export a Unicode PDF using the Noto Sans Sinhala font.",
+    ) is False:
+        pass
 
 
 # ------------------------------------------------------------------ Main AI Chat Interface
@@ -886,21 +897,14 @@ def render_ai_chat_interface(
         mime="text/html; charset=utf-8",
         use_container_width=True,
     )
-    if (thread_title + full_md).isascii():
-        exp4.download_button(
-            "📥 Export PDF",
-            data=_export_pdf_bytes(thread_title, full_md),
-            file_name=f"{thread_title}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    else:
-        exp4.button(
-            "PDF via HTML",
-            disabled=True,
-            use_container_width=True,
-            help="Download HTML, open it in Chrome/Edge, then press Ctrl+P and choose Save as PDF.",
-        )
+    exp4.download_button(
+        "📥 Export PDF",
+        data=_export_pdf_bytes(thread_title, full_md),
+        file_name=f"{thread_title}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+        help="Export a Unicode PDF using the Noto Sans Sinhala font.",
+    )
     with exp5:
         with st.popover("🔗 Share Link", use_container_width=True):
             if st.button("Generate Public Read-Only Link", use_container_width=True):
