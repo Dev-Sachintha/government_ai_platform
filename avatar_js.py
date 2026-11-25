@@ -226,9 +226,11 @@ TOOLS_JS = AVATAR_JS + r"""
     return out;
   }
 
+  let cloudAudio = null;
   function stopSpeech(root) {
     bump();
     try { SYN.speechSynthesis.cancel(); } catch (e) {}
+    try { if (cloudAudio) { cloudAudio.pause(); cloudAudio.src = ''; cloudAudio = null; } } catch (e) {}
     try { getAvatar().stop(); } catch (e) {}
     if (root) setStatus(root, 'Speech stopped.');
   }
@@ -236,6 +238,43 @@ TOOLS_JS = AVATAR_JS + r"""
   function setStatus(root, msg) {
     const el = root && root.querySelector('.gov-status');
     if (el) el.textContent = msg;
+  }
+
+  // Online fallback: Google Translate TTS audio. Unlike browser speech voices,
+  // this does not require a language voice to be installed on the user's device.
+  // The request is made only after the user presses Listen and the local voice is missing.
+  function speakCloud(root, pieces, language, mySession, avatar) {
+    const base = (language || 'en-US').split('-')[0].toLowerCase();
+    let index = 0;
+    setStatus(root, 'No device voice found. Trying online ' + langName(language) + ' voice…');
+    function playNext() {
+      if (mySession !== cur()) return;
+      if (index >= pieces.length) {
+        cloudAudio = null;
+        setStatus(root, 'Cloud audio finished.');
+        if (avatar) avatar.stop();
+        return;
+      }
+      const q = encodeURIComponent(pieces[index++]);
+      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' + encodeURIComponent(base) + '&q=' + q;
+      const audio = new Audio(url);
+      cloudAudio = audio;
+      audio.onended = playNext;
+      audio.onerror = function () {
+        if (mySession !== cur()) return;
+        cloudAudio = null;
+        setStatus(root, 'Online ' + langName(language) + ' voice failed. Check internet and try Listen again.');
+        if (avatar) avatar.stop();
+      };
+      const result = audio.play();
+      if (result && result.catch) result.catch(function () {
+        if (mySession !== cur()) return;
+        cloudAudio = null;
+        setStatus(root, 'Cloud audio was blocked. Click Listen again or allow audio playback.');
+        if (avatar) avatar.stop();
+      });
+    }
+    playNext();
   }
 
   function speak(root, text, requestedLanguage) {
@@ -303,8 +342,14 @@ TOOLS_JS = AVATAR_JS + r"""
     voicesReady().then(function (voices) {
       if (mySession !== cur()) return;
       const voice = findVoice(voices);
+      // If this device has no matching voice, use online audio instead of letting
+      // the browser silently read Sinhala/other scripts with an unrelated accent.
+      if (!voice) {
+        speakCloud(root, pieces, language, mySession, avatar);
+        return;
+      }
       // Chrome needs a short pause between cancel() and speak().
-      setTimeout(function () { next(0, voice, !!voice); }, 120);
+      setTimeout(function () { next(0, voice, true); }, 120);
     });
   }
 
