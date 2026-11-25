@@ -25,30 +25,63 @@ _PILL = ("background:#fff; border:1px solid rgba(128,128,128,0.45); border-radiu
          "padding:5px 13px; cursor:pointer; font-size:12px; color:#333;")
 
 
+@st.cache_data(ttl=86400, max_entries=256, show_spinner=False)
 def _translate_speech_text(text: str, target: str) -> str:
-    """Translate prose for speech while preserving fenced code blocks."""
+    """Translate answer prose in batches, cache results, and back off on rate limits."""
+    import time
     from deep_translator import GoogleTranslator
 
-    translator = GoogleTranslator(source="auto", target=target)
+    source = text or ""
     fence = chr(96) * 3
-    parts = re.split("(" + re.escape(fence) + r"[\s\S]*?" + re.escape(fence) + ")", text or "")
-    translated = []
+    parts = re.split("(" + re.escape(fence) + r"[\s\S]*?" + re.escape(fence) + ")", source)
+    translator = GoogleTranslator(source="auto", target=target)
+    output = []
+
     for part in parts:
         if not part or part.startswith(fence):
-            translated.append(part)
+            output.append(part)
             continue
+
         paragraphs = re.split(r"(\n\s*\n)", part)
+        batch = []
         for paragraph in paragraphs:
             if not paragraph or paragraph.isspace():
-                translated.append(paragraph)
-            elif len(paragraph) <= 4500:
-                translated.append(translator.translate(paragraph))
+                output.append(paragraph)
+            elif len(paragraph) <= 3500:
+                batch.append(paragraph)
             else:
-                translated.append("".join(
-                    translator.translate(paragraph[i:i + 4000])
-                    for i in range(0, len(paragraph), 4000)
-                ))
-    return "".join(translated)
+                batch.extend(
+                    paragraph[i:i + 3000]
+                    for i in range(0, len(paragraph), 3000)
+                )
+
+        if batch:
+            last_error = None
+            for attempt in range(4):
+                try:
+                    translated_batch = translator.translate_batch(batch)
+                    if not translated_batch or len(translated_batch) != len(batch):
+                        raise RuntimeError("Translation provider returned an incomplete batch.")
+                    output.extend(translated_batch)
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    message = str(exc).lower()
+                    rate_limited = any(
+                        marker in message
+                        for marker in ("too many requests", "429", "rate limit", "server error")
+                    )
+                    if not rate_limited or attempt == 3:
+                        break
+                    time.sleep(2 ** (attempt + 1))
+            if last_error is not None:
+                raise RuntimeError(
+                    "Translation service is temporarily rate-limited. "
+                    "Wait 1–2 minutes and retry; cached translations will be reused."
+                ) from last_error
+
+    return "".join(output)
 
 
 def render_message_tools(text: str, msg_index: int):
@@ -85,7 +118,7 @@ def render_message_tools(text: str, msg_index: int):
                     st.session_state[state_key] = {"language": target, "text": translated_text}
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"Translation failed: {exc}. Check the app's internet connection.")
+                    st.error(f"Translation failed: {exc}")
         else:
             spoken_text = translated_text if target else (text or "")
             attr = _html.escape(spoken_text, quote=True)
