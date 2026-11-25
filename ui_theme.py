@@ -207,6 +207,98 @@ header[data-testid="stHeader"] { background: transparent; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 
+
+/* ---------- Modern responsive polish (2026) ---------- */
+:root {
+  --ui-accent: #4f46e5;
+  --ui-accent-2: #7c3aed;
+  --ui-accent-3: #0891b2;
+  --ui-radius: 18px;
+  --ui-border: rgba(100,116,139,.20);
+  --ui-surface: rgba(255,255,255,.78);
+  --ui-shadow: 0 12px 32px rgba(30,41,59,.08);
+}
+html { scroll-behavior: smooth; }
+.stApp {
+  background:
+    radial-gradient(ellipse at 10% 0%, rgba(99,102,241,.10), transparent 35%),
+    radial-gradient(ellipse at 95% 12%, rgba(14,165,233,.08), transparent 30%),
+    #f6f7fc !important;
+}
+.block-container { max-width: 1500px !important; }
+[data-testid="stSidebar"] > div:first-child {
+  background: linear-gradient(180deg,#fff 0%,#f8f9ff 100%) !important;
+}
+[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p {
+  line-height: 1.55;
+}
+[data-testid="stVerticalBlockBorderWrapper"] {
+  border-radius: 20px !important;
+  border-color: var(--ui-border) !important;
+  box-shadow: 0 6px 24px rgba(15,23,42,.035);
+}
+[data-testid="stMetric"] {
+  border-radius: 18px !important;
+  box-shadow: 0 5px 20px rgba(15,23,42,.035);
+}
+.stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+  min-height: 42px;
+  border-radius: 12px !important;
+  font-weight: 650 !important;
+}
+button[kind="primary"], button[data-testid="stBaseButton-primary"] {
+  box-shadow: 0 6px 18px rgba(79,70,229,.20);
+}
+.stTextInput input, .stTextArea textarea, .stNumberInput input,
+div[data-baseweb="select"] > div {
+  min-height: 42px;
+  border-radius: 12px !important;
+}
+[data-testid="stFileUploaderDropzone"] {
+  border-radius: 18px !important;
+  padding: 1.25rem !important;
+}
+[data-testid="stDataFrame"], [data-testid="stTable"] {
+  border-radius: 16px !important;
+}
+[data-testid="stChatInput"] {
+  border-radius: 18px !important;
+  background: rgba(255,255,255,.96) !important;
+  box-shadow: 0 8px 28px rgba(30,41,59,.10) !important;
+}
+[data-testid="stChatMessage"] {
+  border-radius: 18px !important;
+  backdrop-filter: blur(8px);
+}
+[data-testid="stStatusWidget"] { border-radius: 12px; }
+a { color: var(--ui-accent); }
+:focus-visible { outline: 3px solid rgba(99,102,241,.45) !important; outline-offset: 2px; }
+@media (min-width: 769px) {
+  .block-container { padding: 1.4rem clamp(1.25rem,3vw,3rem) 4rem !important; }
+}
+@media (max-width: 768px) {
+  /* Keep every interaction touch-friendly and prevent sideways page overflow. */
+  html, body, .stApp { max-width: 100%; overflow-x: hidden; }
+  .block-container { padding: .65rem .75rem 2rem !important; }
+  [data-testid="stSidebar"] { width: min(86vw, 320px) !important; }
+  [data-testid="stSidebar"] .stButton > button { min-height: 46px; }
+  [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 16px !important; }
+  [data-testid="stMetric"] { border-radius: 15px !important; }
+  [data-testid="stFileUploaderDropzone"] { padding: .75rem !important; }
+  [data-testid="stChatInput"] { border-radius: 16px !important; }
+}
+@media (max-width: 420px) {
+  .block-container { padding-left: .55rem !important; padding-right: .55rem !important; }
+  .ui-login h1 { font-size: 1.4rem !important; }
+  .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
+    font-size: .92rem !important;
+  }
+}
+@media (prefers-color-scheme: dark) {
+  /* Respect a user's dark OS preference without overriding Streamlit's theme tokens. */
+  [data-testid="stChatInput"] { background: var(--secondary-background-color, #1e1e2e) !important; }
+}
+
 </style>
 """
 
