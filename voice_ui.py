@@ -43,9 +43,9 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
         "button{background:#fff;border:1px solid rgba(128,128,128,.45);border-radius:999px;"
         "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}</style></head><body>"
-        f"<div id='speech-{int(msg_index)}' data-text=\\"{attr}\\" data-lang='{_html.escape(language)}' "
+        f"<div id='speech-{int(msg_index)}' data-text='{attr}' data-lang='{_html.escape(language)}' "
         "style='display:flex;align-items:center;gap:7px;padding:4px 2px;'>"
-        "<button id='speak'>🔊 Listen</button><button id='stop'>⏹ Stop</button>"
+        "<button id='copy'>📋 Copy</button><button id='speak'>🔊 Listen</button><button id='stop'>⏹ Stop</button>"
         "<span id='status' role='status' aria-live='polite' style='font-size:11px;opacity:.8'></span>"
         "</div><script>"
         "(function(){const root=document.querySelector('[id^=speech-]');"
@@ -57,6 +57,10 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "function status(s){root.querySelector('#status').textContent=s;}"
         "function stop(){try{host.speechSynthesis.cancel();}catch(e){}status('Stopped.');}"
         "root.querySelector('#stop').addEventListener('click',stop);"
+        "root.querySelector('#copy').addEventListener('click',function(){"
+        "const clip=(host.navigator&&host.navigator.clipboard)?host.navigator.clipboard: navigator.clipboard;"
+        "if(clip&&clip.writeText){clip.writeText(text).then(()=>status('Copied.'),()=>status('Copy blocked by browser permissions.'));}"
+        "else{status('Clipboard is not supported in this browser.');}});"
         "root.querySelector('#speak').addEventListener('click',function(){"
         "if(!host.speechSynthesis||!host.SpeechSynthesisUtterance){status('Speech is not supported. Use Chrome or Edge.');return;}"
         "stop();const clean=text.replace(/https?:\\/\\/\\S+/g,' link ').replace(/[\\#*\\x60>|~]/g,' ').trim();"
@@ -74,12 +78,8 @@ def _speech_frame(text: str, language: str, msg_index: int):
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
     """Translate an answer with the configured AI provider, then read it aloud."""
     st.caption("Answer audio")
-    cols = st.columns([1.35, 2.4, 1.2])
+    cols = st.columns([2.4, 1.2])
     with cols[0]:
-        if st.button("📋 Copy", key=f"voice_copy_{msg_index}"):
-            st.session_state[f"voice_copy_text_{msg_index}"] = text or ""
-            st.toast("Answer text is ready. If clipboard access is blocked, select and copy the answer.")
-    with cols[1]:
         language_name = st.selectbox(
             "Listening language", list(_TTS_LANGUAGES.keys()), index=0,
             key=f"voice_language_{msg_index}", label_visibility="collapsed",
@@ -92,7 +92,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
         cache_key = "voice_translation_" + hashlib.sha256(
             (lang_code + "\\0" + original).encode("utf-8")
         ).hexdigest()[:24]
-        with cols[2]:
+        with cols[1]:
             translate_clicked = st.button("🌐 Translate", key=f"voice_translate_{msg_index}")
         if translate_clicked:
             if not llm_cfg:
@@ -102,7 +102,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                     prompt = (
                         "Translate the following assistant answer into " + language_name + " (language code " + lang_code + "). "
                         "Preserve the complete meaning, headings, lists, tables, numbers, URLs, names and formatting. "
-                        "Do not add explanations. Keep source-code blocks unchanged.\\n\\n" + original
+                        "Do not add explanations. Keep source-code blocks unchanged.\n\n" + original
                     )
                     with st.spinner("Translating answer…"):
                         translated = llm.generate(
@@ -118,7 +118,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
         if not speech_text:
             st.caption("Select a language and press Translate before listening.")
     else:
-        with cols[2]:
+        with cols[1]:
             st.write("")
     if speech_text:
         _speech_frame(speech_text, lang_code, msg_index)
