@@ -125,6 +125,12 @@ def _authorize(authorization: str | None, x_api_key: str | None) -> None:
         )
 
 
+@app.api_route("/", methods=["GET", "HEAD"])
+def root():
+    """Simple root response for platform and browser health probes."""
+    return {"status": "ok", "service": "sinhala-tts"}
+
+
 @app.get("/health")
 def health():
     return {
