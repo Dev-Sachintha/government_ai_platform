@@ -211,40 +211,77 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                 else:
                     try:
                         audio_parts = []
-                        progress = st.progress(0, text=f"Generating Sinhala audio (0/{len(tts_chunks)})…")
+                        progress = st.progress(
+                            0,
+                            text=f"Connecting to Sinhala voice service (0/{len(tts_chunks)})…",
+                        )
                         for part_number, chunk in enumerate(tts_chunks, start=1):
                             progress.progress(
                                 (part_number - 1) / len(tts_chunks),
-                                text=f"Generating Sinhala audio ({part_number}/{len(tts_chunks)})…",
+                                text=(
+                                    f"Synthesizing Sinhala audio part "
+                                    f"{part_number}/{len(tts_chunks)} — please wait…"
+                                ),
                             )
                             response = requests.post(
                                 service_url + "/v1/tts",
                                 json={"text": chunk},
                                 headers={"Authorization": f"Bearer {api_key}"},
-                                timeout=(15, 240),
+                                # Render free services can need time to wake and load
+                                # the Piper model; synthesis of long chunks is CPU-bound.
+                                timeout=(30, 600),
                             )
                             response.raise_for_status()
-                            if not response.content.startswith(b"RIFF") or b"WAVE" not in response.content[:16]:
+                            audio_bytes = response.content
+                            if not audio_bytes.startswith(b"RIFF") or b"WAVE" not in audio_bytes[:16]:
                                 raise ValueError(
                                     f"Audio part {part_number} is not a valid WAV file."
                                 )
-                            audio_parts.append(response.content)
+                            # Reject empty/corrupt WAV payloads before combining them.
+                            try:
+                                with wave.open(io.BytesIO(audio_bytes), "rb") as wav_check:
+                                    if wav_check.getnframes() <= 0 or wav_check.getframerate() <= 0:
+                                        raise ValueError("The WAV file contains no playable audio frames.")
+                            except (wave.Error, EOFError) as exc:
+                                raise ValueError(
+                                    f"Audio part {part_number} contains an unreadable WAV file: {exc}"
+                                ) from exc
+                            audio_parts.append(audio_bytes)
+                            progress.progress(
+                                part_number / len(tts_chunks),
+                                text=(
+                                    f"Generated Sinhala audio part "
+                                    f"{part_number}/{len(tts_chunks)} successfully."
+                                ),
+                            )
                         progress.progress(1.0, text="Combining Sinhala audio…")
-                        st.session_state[audio_key] = _combine_sinhala_wav_parts(audio_parts)
+                        combined_audio = _combine_sinhala_wav_parts(audio_parts)
+                        if not combined_audio:
+                            raise ValueError("The Sinhala TTS service returned an empty audio file.")
+                        st.session_state[audio_key] = combined_audio
                         progress.empty()
-                        st.success(f"Sinhala audio is ready ({len(tts_chunks)} part(s)).")
+                        st.success(f"Sinhala audio is ready ({len(tts_chunks)} part(s)). Press Play below.")
                     except requests.Timeout:
                         st.error(
-                            "Sinhala TTS timed out while generating an audio part. "
-                            "Try again; the generated audio has not been saved."
+                            "Sinhala TTS is taking longer than 10 minutes for one audio part. "
+                            "The request timed out; please try again or check the Render TTS service logs."
                         )
-                    except requests.RequestException as exc:
+                    except requests.HTTPError as exc:
+                        status_code = getattr(getattr(exc, "response", None), "status_code", "unknown")
                         detail = ""
                         try:
-                            detail = response.text[:300]
+                            detail = exc.response.text[:500]
                         except Exception:
                             pass
-                        st.error(f"Sinhala TTS service request failed: {detail or exc}")
+                        st.error(
+                            f"Sinhala TTS service returned HTTP {status_code}. "
+                            f"{detail or str(exc)}"
+                        )
+                    except requests.RequestException as exc:
+                        st.error(
+                            "Could not connect to the Sinhala TTS service. "
+                            f"Check that the Render service is running and SINHALA_TTS_URL is correct. Details: {exc}"
+                        )
                     except Exception as exc:
                         st.error(f"Sinhala audio generation failed: {exc}")
 
