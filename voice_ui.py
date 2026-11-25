@@ -42,69 +42,55 @@ def _translate_speech_text(text: str, target: str) -> str:
             continue
 
         tokens = re.split(r"(\n\s*\n)", part)
-        chunks_by_token = []
         batch = []
+        token_chunk_counts = []
         for token in tokens:
             if not token or token.isspace():
-                chunks_by_token.append([])
+                token_chunk_counts.append(0)
             else:
                 chunks = [token[i:i + 3000] for i in range(0, len(token), 3000)]
-                chunks_by_token.append(chunks)
+                token_chunk_counts.append(len(chunks))
                 batch.extend(chunks)
 
-        if batch:
-            translator = GoogleTranslator(source="auto", target=target)
-            translated_batch = None
-            last_error = None
-            for attempt in range(4):
-                try:
-                    translated_batch = translator.translate_batch(batch)
-                    if not translated_batch or len(translated_batch) != len(batch):
-                        raise RuntimeError("Translation provider returned an incomplete batch.")
-                    last_error = None
-                    break
-                except Exception as exc:
-                    last_error = exc
-                    message = str(exc).lower()
-                    rate_limited = any(
-                        marker in message
-                        for marker in ("too many requests", "429", "rate limit", "server error")
-                    )
-                    if not rate_limited or attempt == 3:
-                        break
-                    time.sleep(2 ** (attempt + 1))
-            if last_error is not None:
-                raise RuntimeError(
-                    "Translation service is temporarily rate-limited. "
-                    "Wait 1–2 minutes and retry; cached translations will be reused."
-                ) from last_error
-
-            translated_iter = iter(translated_batch)
-            for token_chunks in chunks_by_token:
-                if token_chunks:
-                    output.append("".join(next(translated_iter) for _ in token_chunks))
-                else:
-                    # Empty and paragraph-separator tokens are preserved exactly.
-                    idx = len(output)
-                    # tokens are traversed in order below; recover separator from token index.
-                    token_index = len(output)  # replaced by the ordered reconstruction below
-                    output.append("")
-        else:
+        if not batch:
             output.append(part)
+            continue
 
-        # Rebuild this part in original token order, consuming translated chunks.
-        if batch:
-            translated_iter = iter(translated_batch)
-            rebuilt = []
-            for token in tokens:
-                if not token or token.isspace():
-                    rebuilt.append(token)
-                else:
-                    count = len([token[i:i + 3000] for i in range(0, len(token), 3000)])
-                    rebuilt.append("".join(next(translated_iter) for _ in range(count)))
-            # Remove temporary per-token additions and append the correctly ordered part.
-            output = output[:-len(chunks_by_token)]
-            output.append("".join(rebuilt))
+        translator = GoogleTranslator(source="auto", target=target)
+        translated_batch = None
+        last_error = None
+        for attempt in range(4):
+            try:
+                translated_batch = translator.translate_batch(batch)
+                if not translated_batch or len(translated_batch) != len(batch):
+                    raise RuntimeError("Translation provider returned an incomplete batch.")
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                message = str(exc).lower()
+                rate_limited = any(
+                    marker in message
+                    for marker in ("too many requests", "429", "rate limit", "server error")
+                )
+                if not rate_limited or attempt == 3:
+                    break
+                time.sleep(2 ** (attempt + 1))
+
+        if last_error is not None:
+            raise RuntimeError(
+                "Translation service is temporarily rate-limited. "
+                "Wait 1–2 minutes and retry; cached translations will be reused."
+            ) from last_error
+
+        translated_iter = iter(translated_batch)
+        rebuilt = []
+        for token, chunk_count in zip(tokens, token_chunk_counts):
+            if chunk_count == 0:
+                rebuilt.append(token)
+            else:
+                rebuilt.append("".join(next(translated_iter) for _ in range(chunk_count)))
+        output.append("".join(rebuilt))
 
     return "".join(output)
 
