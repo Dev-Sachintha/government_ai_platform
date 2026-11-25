@@ -561,11 +561,11 @@ def _translation_chunks(text: str, max_chars: int = 2800) -> list[str]:
     chunks = []
     while len(text) > max_chars:
         window = text[:max_chars + 1]
-        candidates = [window.rfind("\\n\\n"), window.rfind(". "), window.rfind("! "), window.rfind("? "), window.rfind(" ")]
+        candidates = [window.rfind("\n\n"), window.rfind(". "), window.rfind("! "), window.rfind("? "), window.rfind(" ")]
         cut = max(candidates)
         if cut < max_chars // 2:
             cut = max_chars
-        elif window[cut:cut + 2] != "\\n\\n":
+        elif window[cut:cut + 2] != "\n\n":
             cut += 1
         chunks.append(text[:cut].strip())
         text = text[cut:].strip()
@@ -587,7 +587,7 @@ def generate_translation(
         prompt = (
             f"Translate the following text into {language_name}. Preserve meaning, "
             "headings, lists, numbers, URLs, names and formatting. Do not add explanations. "
-            "Keep code blocks unchanged. Part " + str(index) + " of " + str(len(chunks)) + ".\\n\\n" + chunk
+            "Keep code blocks unchanged. Part " + str(index) + " of " + str(len(chunks)) + ".\n\n" + chunk
         )
         result = None
         last_error = None
@@ -613,4 +613,4 @@ def generate_translation(
         if result is None:
             raise last_error or LLMError("Translation failed.")
         translated_parts.append(result)
-    return "\\n\\n".join(translated_parts)
+    return "\n\n".join(translated_parts)
