@@ -12,6 +12,7 @@ import os
 
 import streamlit as st
 import streamlit.components.v1 as components
+import llm
 
 from avatar_js import STT_JS, TOOLS_JS
 
@@ -24,20 +25,103 @@ _PILL = ("background:#fff; border:1px solid rgba(128,128,128,0.45); border-radiu
          "padding:5px 13px; cursor:pointer; font-size:12px; color:#333;")
 
 
-def render_message_tools(text: str, msg_index: int):
-    """📋 Copy / 🔊 Listen / ⏹️ Stop under an AI answer (Listen opens the talking avatar)."""
+_TTS_LANGUAGES = {
+    "Original answer (auto)": "auto",
+    "English": "en-US", "Sinhala (සිංහල)": "si-LK", "Tamil (தமிழ்)": "ta-LK",
+    "Hindi (हिन्दी)": "hi-IN", "Arabic (العربية)": "ar-SA", "Chinese (中文)": "zh-CN",
+    "Japanese (日本語)": "ja-JP", "Korean (한국어)": "ko-KR", "French": "fr-FR",
+    "German": "de-DE", "Spanish": "es-ES", "Russian": "ru-RU", "Bengali": "bn-BD",
+    "Urdu": "ur-PK", "Malay": "ms-MY", "Indonesian": "id-ID", "Thai": "th-TH",
+    "Italian": "it-IT", "Portuguese": "pt-PT",
+}
+
+
+def _speech_frame(text: str, language: str, msg_index: int):
+    """Speech starts only after the user directly presses Listen inside the iframe."""
     attr = _html.escape(text or "", quote=True)
     page = (
-        "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS + "</style></head><body>"
-        f"<div data-gov-tools='1' data-index='{int(msg_index)}' data-text=\"{attr}\" "
-        "style='display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:4px 2px;'>"
-        f"<button type='button' data-action='copy' style=\"{_PILL}\">📋 Copy</button>"
-        f"<button type='button' data-action='listen' style=\"{_PILL}\">🔊 Listen</button>"
-        f"<button type='button' data-action='stop' style=\"{_PILL}\">⏹️ Stop</button>"
-        "<span class='gov-status' role='status' aria-live='polite' style='font-size:11px;opacity:.8;'></span>"
-        "</div><script>" + TOOLS_JS + "</script></body></html>"
+        "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
+        "button{background:#fff;border:1px solid rgba(128,128,128,.45);border-radius:999px;"
+        "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}</style></head><body>"
+        f"<div id='speech-{int(msg_index)}' data-text=\\"{attr}\\" data-lang='{_html.escape(language)}' "
+        "style='display:flex;align-items:center;gap:7px;padding:4px 2px;'>"
+        "<button id='speak'>🔊 Listen</button><button id='stop'>⏹ Stop</button>"
+        "<span id='status' role='status' aria-live='polite' style='font-size:11px;opacity:.8'></span>"
+        "</div><script>"
+        "(function(){const root=document.querySelector('[id^=speech-]');"
+        "const host=(function(){try{return window.parent&&window.parent.speechSynthesis?window.parent:window;}catch(e){return window;}})();"
+        "const text=root.dataset.text||'';"
+        "function detect(t){if(/[\\u0D80-\\u0DFF]/.test(t))return 'si-LK';if(/[\\u0B80-\\u0BFF]/.test(t))return 'ta-LK';"
+        "if(/[\\u0600-\\u06FF]/.test(t))return 'ar-SA';if(/[\\u0900-\\u097F]/.test(t))return 'hi-IN';return 'en-US';}"
+        "const lang=root.dataset.lang==='auto'?detect(text):root.dataset.lang;"
+        "function status(s){root.querySelector('#status').textContent=s;}"
+        "function stop(){try{host.speechSynthesis.cancel();}catch(e){}status('Stopped.');}"
+        "root.querySelector('#stop').addEventListener('click',stop);"
+        "root.querySelector('#speak').addEventListener('click',function(){"
+        "if(!host.speechSynthesis||!host.SpeechSynthesisUtterance){status('Speech is not supported. Use Chrome or Edge.');return;}"
+        "stop();const clean=text.replace(/https?:\\/\\/\\S+/g,' link ').replace(/[\\#*\\x60>|~]/g,' ').trim();"
+        "if(!clean){status('Nothing to read.');return;}const chunks=clean.match(/.{1,170}(?:\\s|$)/g)||[clean];"
+        "let i=0;const voices=host.speechSynthesis.getVoices();const base=lang.split('-')[0].toLowerCase();"
+        "const voice=voices.find(v=>v.lang.toLowerCase()===lang.toLowerCase())||voices.find(v=>v.lang.toLowerCase().startsWith(base));"
+        "function next(){if(i>=chunks.length){status('Finished.');return;}const u=new host.SpeechSynthesisUtterance(chunks[i++]);"
+        "u.lang=lang;u.rate=1;if(voice)u.voice=voice;u.onstart=()=>status('Speaking '+lang+'…');u.onend=next;"
+        "u.onerror=e=>status('Speech error: '+e.error);host.speechSynthesis.speak(u);}next();"
+        "});})();</script></body></html>"
     )
-    components.html(page, height=46)
+    components.html(page, height=42)
+
+
+def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
+    """Translate an answer with the configured AI provider, then read it aloud."""
+    st.caption("Answer audio")
+    cols = st.columns([1.35, 2.4, 1.2])
+    with cols[0]:
+        if st.button("📋 Copy", key=f"voice_copy_{msg_index}"):
+            st.session_state[f"voice_copy_text_{msg_index}"] = text or ""
+            st.toast("Answer text is ready. If clipboard access is blocked, select and copy the answer.")
+    with cols[1]:
+        language_name = st.selectbox(
+            "Listening language", list(_TTS_LANGUAGES.keys()), index=0,
+            key=f"voice_language_{msg_index}", label_visibility="collapsed",
+        )
+    lang_code = _TTS_LANGUAGES[language_name]
+    original = text or ""
+    speech_text = original
+    if lang_code != "auto":
+        import hashlib
+        cache_key = "voice_translation_" + hashlib.sha256(
+            (lang_code + "\\0" + original).encode("utf-8")
+        ).hexdigest()[:24]
+        with cols[2]:
+            translate_clicked = st.button("🌐 Translate", key=f"voice_translate_{msg_index}")
+        if translate_clicked:
+            if not llm_cfg:
+                st.error("Translation needs the configured AI provider. Open the main chat to use this feature.")
+            else:
+                try:
+                    prompt = (
+                        "Translate the following assistant answer into " + language_name + " (language code " + lang_code + "). "
+                        "Preserve the complete meaning, headings, lists, tables, numbers, URLs, names and formatting. "
+                        "Do not add explanations. Keep source-code blocks unchanged.\\n\\n" + original
+                    )
+                    with st.spinner("Translating answer…"):
+                        translated = llm.generate(
+                            llm_cfg, prompt, json_mode=False, temperature=0.1,
+                            max_tokens=3000, timeout=120,
+                        ).strip()
+                    if not translated:
+                        raise ValueError("The translation service returned an empty result.")
+                    st.session_state[cache_key] = translated
+                except Exception as exc:
+                    st.error(f"Translation failed: {exc}")
+        speech_text = st.session_state.get(cache_key, "")
+        if not speech_text:
+            st.caption("Select a language and press Translate before listening.")
+    else:
+        with cols[2]:
+            st.write("")
+    if speech_text:
+        _speech_frame(speech_text, lang_code, msg_index)
 
 
 _LANGS = [
