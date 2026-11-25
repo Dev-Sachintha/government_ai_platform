@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hmac
 import io
+import json
 import logging
 import os
 import threading
@@ -20,12 +21,22 @@ from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.responses import Response
 from huggingface_hub import hf_hub_download
 from pydantic import BaseModel, Field
+import onnxruntime as ort
 from piper import PiperVoice
+from piper.config import PiperConfig, SynthesisConfig
 
 MODEL_REPO = os.getenv("SINHALA_TTS_MODEL_REPO", "chaturadilan/dilu-tts")
 MODEL_FILE = "onnx/si_LK-dilu-medium.onnx"
 CONFIG_FILE = "onnx/si_LK-dilu-medium.onnx.json"
 MAX_TEXT_LENGTH = int(os.getenv("SINHALA_TTS_MAX_CHARS", "2500"))
+# Render Free has a small CPU quota. Avoid ONNX Runtime creating a large
+# thread pool based on the host's physical core count.
+ORT_THREADS = max(1, min(4, int(os.getenv("PIPER_ORT_THREADS", "1"))))
+ORT_INTER_OP_THREADS = max(1, min(2, int(os.getenv("PIPER_ORT_INTER_OP_THREADS", "1"))))
+LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.0"))
+if not 0.5 <= LENGTH_SCALE <= 2.0:
+    raise RuntimeError("SINHALA_TTS_LENGTH_SCALE must be between 0.5 and 2.0.")
+SYNTHESIS_CONFIG = SynthesisConfig(length_scale=LENGTH_SCALE)
 
 _voice: PiperVoice | None = None
 _voice_lock = threading.Lock()
@@ -69,8 +80,28 @@ async def lifespan(app: FastAPI):
         cache_dir=str(cache_dir),
     )
     logger.info("Loading Sinhala voice model repo=%s model_file=%s", MODEL_REPO, MODEL_FILE)
-    _voice = PiperVoice.load(model_path, config_path=config_path)
-    logger.info("Sinhala voice model loaded successfully rss_peak_mb=%s", _memory_rss_mb())
+    # Build the ONNX session explicitly so its CPU thread pool respects the
+    # Render instance's CPU quota instead of guessing from host core count.
+    with open(config_path, "r", encoding="utf-8") as config_file:
+        voice_config = PiperConfig.from_dict(json.load(config_file))
+    session_options = ort.SessionOptions()
+    session_options.intra_op_num_threads = ORT_THREADS
+    session_options.inter_op_num_threads = ORT_INTER_OP_THREADS
+    session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    _voice = PiperVoice(
+        config=voice_config,
+        session=ort.InferenceSession(
+            model_path,
+            sess_options=session_options,
+            providers=["CPUExecutionProvider"],
+        ),
+    )
+    logger.info(
+        "Sinhala voice model loaded successfully rss_peak_mb=%s ort_intra_threads=%s "
+        "ort_inter_threads=%s length_scale=%s",
+        _memory_rss_mb(), ORT_THREADS, ORT_INTER_OP_THREADS, LENGTH_SCALE,
+    )
     yield
     _voice = None
 
@@ -167,7 +198,7 @@ def synthesize(
         # small CPU instances and avoid concurrent model-session contention.
         with _voice_lock:
             with wave.open(output, "wb") as wav_file:
-                _voice.synthesize_wav(text, wav_file)
+                _voice.synthesize_wav(text, wav_file, syn_config=SYNTHESIS_CONFIG)
     except Exception as exc:
         logger.exception(
             "synthesis_failed chars=%s elapsed_s=%.2f rss_peak_mb=%s",
