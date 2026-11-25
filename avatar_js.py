@@ -240,46 +240,6 @@ TOOLS_JS = AVATAR_JS + r"""
     if (el) el.textContent = msg;
   }
 
-  // Online fallback: Google Translate TTS audio. Unlike browser speech voices,
-  // this does not require a language voice to be installed on the user's device.
-  // The request is made only after the user presses Listen and the local voice is missing.
-  function speakCloud(root, pieces, language, mySession, avatar) {
-    const base = (language || 'en-US').split('-')[0].toLowerCase();
-    let index = 0;
-    setStatus(root, 'No device voice found. Trying online ' + langName(language) + ' voice…');
-    function playNext() {
-      if (mySession !== cur()) return;
-      if (index >= pieces.length) {
-        cloudAudio = null;
-        setStatus(root, 'Cloud audio finished.');
-        if (avatar) avatar.stop();
-        return;
-      }
-      const q = encodeURIComponent(pieces[index++]);
-      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=gtx&tl=' + encodeURIComponent(base) + '&q=' + q;
-      // Create and play the audio in the same iframe that received the Listen click.
-      // Cross-window Audio objects can lose transient user activation in some browsers.
-      const audio = new Audio(url);
-      cloudAudio = audio;
-      audio.onended = playNext;
-      audio.onerror = function () {
-        if (mySession !== cur()) return;
-        cloudAudio = null;
-        setStatus(root, 'Online ' + langName(language) + ' voice failed. Check internet and try Listen again.');
-        if (avatar) avatar.stop();
-      };
-      const result = audio.play();
-      if (result && result.catch) result.catch(function (err) {
-        if (mySession !== cur()) return;
-        cloudAudio = null;
-        const reason = err && (err.name || err.message) ? (err.name || err.message) : 'unknown playback restriction';
-        setStatus(root, 'Cloud TTS returned audio this browser cannot decode (' + reason + '). The online TTS endpoint may have returned an invalid audio response.');
-        if (avatar) avatar.stop();
-      });
-    }
-    playNext();
-  }
-
   function speak(root, text, requestedLanguage) {
     if (!('speechSynthesis' in SYN) || !('SpeechSynthesisUtterance' in SYN)) {
       setStatus(root, 'Speech is not supported by this browser. Use Chrome or Edge.');
@@ -348,7 +308,9 @@ TOOLS_JS = AVATAR_JS + r"""
     const availableVoices = SYN.speechSynthesis.getVoices() || [];
     const immediateVoice = findVoice(availableVoices);
     if (!immediateVoice) {
-      speakCloud(root, pieces, language, mySession, avatar);
+      setStatus(root, 'No ' + langName(language) +
+        ' voice is installed in this browser. For Sinhala, use the server-side Sinhala Listen button.');
+      if (avatar) avatar.stop();
       return;
     }
     // Chrome needs a short pause between cancel() and speak().
