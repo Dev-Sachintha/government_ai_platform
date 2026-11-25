@@ -598,24 +598,54 @@ def _parse_uploaded_attachments(files, llm_cfg: dict, vision_model: str) -> str:
 
 
 def _export_pdf_bytes(title: str, markdown_text: str) -> bytes:
-    """Generate clean downloadable PDF bytes using fpdf2."""
+    """Generate a PDF only when its built-in font can represent every character."""
     from fpdf import FPDF
+
+    if not (title + markdown_text).isascii():
+        raise ValueError(
+            "This PDF font cannot represent Sinhala or other Unicode scripts. "
+            "Download the Unicode HTML file and use Print > Save as PDF in Chrome or Edge."
+        )
 
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 14)
-    safe_title = title.encode("latin-1", "replace").decode("latin-1")
-    pdf.multi_cell(0, 8, safe_title)
+    pdf.multi_cell(0, 8, title)
     pdf.ln(4)
     pdf.set_font("Helvetica", size=10)
-    clean_body = (
-        re.sub(r"[#*`]", "", markdown_text)
-        .encode("latin-1", "replace")
-        .decode("latin-1")
-    )
-    pdf.multi_cell(0, 6, clean_body)
+    pdf.multi_cell(0, 6, re.sub(r"[#*\x60]", "", markdown_text))
     return bytes(pdf.output())
+
+
+def _export_html_bytes(title: str, markdown_text: str) -> bytes:
+    """Create a UTF-8 HTML document with Markdown tables and Unicode script fonts."""
+    import html as html_lib
+    import markdown
+
+    body = markdown.markdown(
+        markdown_text,
+        extensions=["tables", "fenced_code", "sane_lists"],
+        output_format="html5",
+    )
+    safe_title = html_lib.escape(str(title))
+    page = f"""<!doctype html>
+<html lang="si">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{safe_title}</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Sinhala:wght@400;700&family=Noto+Sans+Tamil:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Arabic:wght@400;700&display=swap" rel="stylesheet">
+<style>
+body{{font-family:'Noto Sans Sinhala','Noto Sans Tamil','Noto Sans Devanagari','Noto Sans Arabic','Segoe UI',sans-serif;line-height:1.75;max-width:1000px;margin:36px auto;padding:0 24px;color:#202124}}
+h1,h2,h3{{line-height:1.35}} table{{border-collapse:collapse;width:100%;margin:18px 0}}
+th,td{{border:1px solid #cbd5e1;padding:9px 12px;text-align:left;vertical-align:top}}
+th{{background:#eef2ff}} pre{{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:14px;border-radius:8px}}
+code{{overflow-wrap:anywhere}} img{{max-width:100%}}
+@media print{{body{{max-width:none;margin:12mm;padding:0}} a{{color:inherit;text-decoration:none}}}}
+</style>
+</head><body><h1>{safe_title}</h1>{body}</body></html>"""
+    return page.encode("utf-8-sig")
 
 
 # ------------------------------------------------------------------ Multi-Language TTS & STT
@@ -727,30 +757,46 @@ def _render_canvas_pane(thread_title: str):
         # Isolated iframe supports HTML/CSS/JS consistently across Streamlit versions.
         components.html(html_code, height=460, scrolling=True)
 
-    # Export Canvas (.md, .pdf, .txt)
-    c1, c2, c3 = st.columns(3)
+    # Export Canvas. UTF-8 downloads preserve Sinhala, Tamil and other Unicode scripts.
+    c1, c2, c3, c4 = st.columns(4)
     content = st.session_state["canvas_content"]
     c1.download_button(
         "⬇️ .MD",
-        data=content,
+        data=content.encode("utf-8-sig"),
         file_name="canvas_draft.md",
-        mime="text/markdown",
+        mime="text/markdown; charset=utf-8",
         use_container_width=True,
     )
     c2.download_button(
         "⬇️ .TXT",
-        data=content,
+        data=content.encode("utf-8-sig"),
         file_name="canvas_draft.txt",
-        mime="text/plain",
+        mime="text/plain; charset=utf-8",
         use_container_width=True,
     )
     c3.download_button(
-        "⬇️ .PDF",
-        data=_export_pdf_bytes(thread_title, content),
-        file_name="canvas_draft.pdf",
-        mime="application/pdf",
+        "⬇️ .HTML (Unicode)",
+        data=_export_html_bytes(thread_title, content),
+        file_name="canvas_draft.html",
+        mime="text/html; charset=utf-8",
         use_container_width=True,
     )
+    if (thread_title + content).isascii():
+        c4.download_button(
+            "⬇️ .PDF",
+            data=_export_pdf_bytes(thread_title, content),
+            file_name="canvas_draft.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        c4.button(
+            "PDF unavailable for this language",
+            disabled=True,
+            use_container_width=True,
+            help="Download Unicode HTML, open it in Chrome/Edge, then press Ctrl+P and choose Save as PDF.",
+        )
+    st.caption("For Sinhala or other non-English scripts: download HTML, open it in Chrome/Edge, then press Ctrl+P → Save as PDF.")
 
 
 # ------------------------------------------------------------------ Main AI Chat Interface
