@@ -105,7 +105,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
         # Sinhala is synthesized on the server; no browser voice or third-party
         # browser TTS endpoint is required. The API key remains on the Streamlit server.
         is_sinhala = lang_code == "si-LK" or (
-            lang_code == "auto" and any("\\u0D80" <= ch <= "\\u0DFF" for ch in speech_text)
+            lang_code == "auto" and any("\u0D80" <= ch <= "\u0DFF" for ch in speech_text)
         )
         if is_sinhala:
             import hashlib
