@@ -257,8 +257,9 @@ TOOLS_JS = AVATAR_JS + r"""
       }
       const q = encodeURIComponent(pieces[index++]);
       const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' + encodeURIComponent(base) + '&q=' + q;
-      const AudioCtor = SYN.Audio || Audio;
-      const audio = new AudioCtor(url);
+      // Create and play the audio in the same iframe that received the Listen click.
+      // Cross-window Audio objects can lose transient user activation in some browsers.
+      const audio = new Audio(url);
       cloudAudio = audio;
       audio.onended = playNext;
       audio.onerror = function () {
@@ -268,10 +269,11 @@ TOOLS_JS = AVATAR_JS + r"""
         if (avatar) avatar.stop();
       };
       const result = audio.play();
-      if (result && result.catch) result.catch(function () {
+      if (result && result.catch) result.catch(function (err) {
         if (mySession !== cur()) return;
         cloudAudio = null;
-        setStatus(root, 'Cloud audio was blocked. Click Listen again or allow audio playback.');
+        const reason = err && (err.name || err.message) ? (err.name || err.message) : 'unknown playback restriction';
+        setStatus(root, 'Cloud audio could not start (' + reason + '). Check this site’s sound permission, then press Listen again.');
         if (avatar) avatar.stop();
       });
     }
