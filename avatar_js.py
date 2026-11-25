@@ -256,7 +256,7 @@ TOOLS_JS = AVATAR_JS + r"""
         return;
       }
       const q = encodeURIComponent(pieces[index++]);
-      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=' + encodeURIComponent(base) + '&q=' + q;
+      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=gtx&tl=' + encodeURIComponent(base) + '&q=' + q;
       // Create and play the audio in the same iframe that received the Listen click.
       // Cross-window Audio objects can lose transient user activation in some browsers.
       const audio = new Audio(url);
@@ -273,7 +273,7 @@ TOOLS_JS = AVATAR_JS + r"""
         if (mySession !== cur()) return;
         cloudAudio = null;
         const reason = err && (err.name || err.message) ? (err.name || err.message) : 'unknown playback restriction';
-        setStatus(root, 'Cloud audio could not start (' + reason + '). Check this site’s sound permission, then press Listen again.');
+        setStatus(root, 'Cloud TTS returned audio this browser cannot decode (' + reason + '). The online TTS endpoint may have returned an invalid audio response.');
         if (avatar) avatar.stop();
       });
     }
