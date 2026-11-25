@@ -10,4 +10,3 @@ pypdfium2>=4.30.0
 Pillow>=10.0.0
 fpdf2
 duckduckgo-search
-deep-translator>=1.11.4

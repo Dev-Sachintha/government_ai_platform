@@ -10,7 +10,6 @@ import uuid
 import pandas as pd
 import pypdf
 import streamlit as st
-import streamlit.components.v1 as components
 
 import library
 import llm
@@ -724,7 +723,7 @@ def _render_canvas_pane(thread_title: str):
         html_code = st.session_state["canvas_content"]
         if "<html" not in html_code.lower():
             html_code = f"<!DOCTYPE html><html><body style='font-family:sans-serif;padding:16px;'>{html_code}</body></html>"
-        components.html(html_code, height=480, scrolling=True)
+        st.html(f"<div style=\"height:460px; overflow:auto;\">{html_code}</div>", unsafe_allow_javascript=True)
 
     # Export Canvas (.md, .pdf, .txt)
     c1, c2, c3 = st.columns(3)
