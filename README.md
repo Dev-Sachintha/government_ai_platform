@@ -110,9 +110,10 @@ It hides automatically when the speech ends, or press **⏹ Stop**. To use anoth
 Needs `enableStaticServing = true` in `.streamlit/config.toml` (already set).
 
 ## Voice buttons (📋 Copy, 🔊 Listen, ⏹️ Stop, 🎤 Speak)
-These are small iframe components (`voice_ui.py`, scripts in `avatar_js.py`), so their JavaScript always runs.
-They use the main page's speech engine / microphone through `window.parent`. Use Chrome or Edge and allow the
-microphone when asked. If something fails, the grey status text next to the buttons shows the reason.
+Copy/Listen/Stop controls for browser-native languages and the Speak dictation bar use small iframe
+components (`voice_ui.py`, scripts in `avatar_js.py`). They use the main page's speech engine /
+microphone through `window.parent`. Use Chrome or Edge and allow the microphone when asked.
+Sinhala Listen uses the separate server-side Piper service described below and returns a WAV audio player.
 
 
 ## Self-hosted Sinhala Text-to-Speech (TTS)
