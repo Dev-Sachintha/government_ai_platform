@@ -46,7 +46,7 @@ function getAvatar() {
     ready = true;
     draw(0);
   };
-  const FALLBACK = host.location.origin + '/app/static/avatar.jpg';
+  const FALLBACK = host.location.origin + '/app/static/assistant_profile.jpg';
   let tried = 0;
   function loadImage() {
     // Preferred: picture embedded in the page by the assets component (no static file needed).
