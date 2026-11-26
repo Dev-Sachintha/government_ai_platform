@@ -54,9 +54,9 @@ if ORT_GRAPH_OPT_LEVEL not in _GRAPH_OPT_LEVELS:
     raise RuntimeError("PIPER_ORT_GRAPH_OPT_LEVEL must be disable, basic, extended, or all.")
 # Slightly slower, lower-variation defaults can improve Sinhala word clarity.
 # Tune these in Render environment variables without changing the application.
-LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.05"))
-NOISE_SCALE = float(os.getenv("SINHALA_TTS_NOISE_SCALE", "0.60"))
-NOISE_W = float(os.getenv("SINHALA_TTS_NOISE_W", "0.70"))
+LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.12"))
+NOISE_SCALE = float(os.getenv("SINHALA_TTS_NOISE_SCALE", "0.55"))
+NOISE_W = float(os.getenv("SINHALA_TTS_NOISE_W", "0.65"))
 if not 0.5 <= LENGTH_SCALE <= 2.0:
     raise RuntimeError("SINHALA_TTS_LENGTH_SCALE must be between 0.5 and 2.0.")
 if not 0.0 <= NOISE_SCALE <= 2.0:
