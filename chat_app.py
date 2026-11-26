@@ -817,6 +817,35 @@ def render_ai_chat_interface(
 ):
     # Publish the talking-avatar image to the parent page before Listen controls render.
     _vui_assets()
+    # Responsive chat layout: prevent tables and toolbar columns from becoming
+    # extremely narrow on phones; tables can scroll horizontally when needed.
+    st.markdown(
+        """<style>
+        @media (max-width: 768px) {
+          [data-testid="stChatMessage"] { padding: .55rem .35rem; }
+          [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+            min-width: 0; overflow-wrap: anywhere;
+          }
+          [data-testid="stChatMessage"] table {
+            display: block; width: 100%; max-width: 100%;
+            overflow-x: auto; border-collapse: collapse;
+          }
+          [data-testid="stChatMessage"] th,
+          [data-testid="stChatMessage"] td {
+            min-width: 145px; max-width: 65vw;
+            padding: 7px 9px; vertical-align: top;
+            overflow-wrap: anywhere;
+          }
+          [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap; gap: .55rem;
+          }
+          [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex: 1 1 44%; min-width: 138px;
+          }
+        }
+        </style>""",
+        unsafe_allow_html=True,
+    )
     active_tid = st.session_state.get("active_thread_id")
     if not active_tid:
         active_tid = _create_thread(db_path, username)
