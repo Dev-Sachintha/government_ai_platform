@@ -62,8 +62,10 @@ function getAvatar() {
 
   // Face animation overlay: brief natural blinks and very subtle cheek lift/blush.
   // Coordinates are in the 720x720 avatar image space.
-  const EYES = [{x:294,y:326,w:43,h:15},{x:414,y:326,w:43,h:15}];
-  const CHEEKS = [{x:274,y:438},{x:445,y:438}];
+  // Correct coordinates for the central face in static/avatar.jpg (720x720).
+  // Eye line is around y=432; cheek areas sit beside the moustache around y=500.
+  const EYES = [{x:275,y:424,w:48,h:21},{x:397,y:424,w:48,h:21}];
+  const CHEEKS = [{x:266,y:500},{x:454,y:500}];
   function draw(m) {
     if (!ready) return;
     ctx.drawImage(img, 0, 0);
@@ -92,9 +94,9 @@ function getAvatar() {
       EYES.forEach(function (eye) {
         const lidHeight = eye.h * lid;
         ctx.save();
-        ctx.fillStyle = 'rgba(218,177,145,' + Math.min(0.98, lid) + ')';
+        ctx.fillStyle = 'rgba(174,130,102,' + Math.min(0.96, lid) + ')';
         ctx.beginPath();
-        ctx.ellipse(eye.x + eye.w / 2, eye.y + eye.h / 2, eye.w / 2 + 2, Math.max(1, lidHeight), 0, 0, Math.PI * 2);
+        ctx.ellipse(eye.x + eye.w / 2, eye.y + eye.h / 2, eye.w / 2 + 1, Math.max(1, lidHeight * 1.25), 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = 'rgba(75,42,35,' + Math.min(0.75, lid) + ')';
         ctx.lineWidth = 3;
@@ -108,8 +110,8 @@ function getAvatar() {
 
     // Cheeks softly lift while speaking; keep the effect low-opacity and brief.
     if (m > 0.03) {
-      const cheekAlpha = Math.min(0.12, 0.035 + m * 0.085);
-      const lift = Math.sin(t / 170) * m * 2.5;
+      const cheekAlpha = Math.min(0.10, 0.025 + m * 0.075);
+      const lift = Math.sin(t / 170) * m * 3;
       CHEEKS.forEach(function (cheek) {
         ctx.fillStyle = 'rgba(235,112,126,' + cheekAlpha + ')';
         ctx.beginPath();
