@@ -46,16 +46,24 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
         "button{background:#fff;border:1px solid rgba(128,128,128,.45);border-radius:999px;"
         "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}"
-        ".gov-status{font-size:11px;opacity:.8}</style></head><body>"
+        ".gov-status{font-size:11px;opacity:.8}"
+        ".gov-reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:12px;"
+        "background:#f8faff;color:#182033;font-size:16px;line-height:1.9;max-height:190px;overflow:auto;white-space:pre-wrap;}"
+        ".gov-word{border-radius:5px;padding:1px 2px;transition:background .12s,color .12s}"
+        ".gov-word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}"
+        ".gov-letter.active{color:#fff;background:#6757d9;border-radius:3px}"
+        "</style></head><body>"
         f"<div id='speech-{int(msg_index)}' data-gov-tools data-text='{attr}' data-lang='{lang}' "
-        "style='display:flex;align-items:center;gap:7px;padding:4px 2px;'>"
+        "style='padding:4px 2px;'>"
+        "<div style='display:flex;align-items:center;flex-wrap:wrap;gap:7px;'>"
         "<button type='button' data-action='copy'>📋 Copy</button>"
         "<button type='button' data-action='listen'>🔊 Listen</button>"
         "<button type='button' data-action='stop'>⏹ Stop</button>"
-        "<span class='gov-status' role='status' aria-live='polite'></span>"
+        "<span class='gov-status' role='status' aria-live='polite'></span></div>"
+        "<div class='gov-reader' data-reader aria-live='off'></div>"
         "</div><script>" + TOOLS_JS + "</script></body></html>"
     )
-    components.html(page, height=46)
+    components.html(page, height=260)
 
 
 def _split_sinhala_tts_text(text: str, max_chars: int = 120) -> list[str]:
@@ -127,6 +135,58 @@ def _combine_sinhala_wav_parts(audio_parts: list[bytes]) -> bytes:
                 combined.writeframesraw(silence)
             combined.writeframesraw(frames)
     return output.getvalue()
+
+
+def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
+    """Play server-generated Sinhala WAV with approximate word/letter karaoke highlighting."""
+    audio_uri = "data:audio/wav;base64," + base64.b64encode(audio_bytes).decode("ascii")
+    text_json = json.dumps(text or "", ensure_ascii=False).replace("</", "<\\/")
+    audio_json = json.dumps(audio_uri)
+    page = """<!doctype html><html><head><meta charset="utf-8"><style>
+      html,body{margin:0;padding:0;font-family:Inter,system-ui,sans-serif;color:#182033}
+      .player{padding:10px;border:1px solid #d8deea;border-radius:14px;background:#f8faff}
+      audio{width:100%;height:38px}
+      .reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:10px;
+        background:#fff;font-size:16px;line-height:2;max-height:190px;overflow:auto;white-space:pre-wrap}
+      .word{border-radius:5px;padding:1px 2px}
+      .word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}
+      .letter.active{color:#fff;background:#6757d9;border-radius:3px}
+      .hint{font-size:11px;opacity:.7;margin-top:5px}
+    </style></head><body><div class="player">
+      <audio id="audio" controls preload="metadata"></audio>
+      <div class="reader" id="reader"></div>
+      <div class="hint">Sinhala word highlighting is synchronized approximately with audio progress.</div>
+    </div><script>
+      const source=__AUDIO__, original=__TEXT__;
+      const audio=document.getElementById('audio'), reader=document.getElementById('reader');
+      audio.src=source;
+      const segments=[];
+      const wordRe=/\\S+|\\s+/gu; let match;
+      while((match=wordRe.exec(original))!==null){
+        const value=match[0], start=match.index;
+        if(/^\\s+$/u.test(value)){segments.push({space:value});continue;}
+        const span=document.createElement('span');span.className='word';
+        const letterParts=(typeof Intl!=='undefined'&&Intl.Segmenter)
+          ? Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value),x=>x.segment)
+          : Array.from(value);
+        letterParts.forEach(ch=>{const s=document.createElement('span');s.className='letter';s.textContent=ch;span.appendChild(s);});
+        reader.appendChild(span);segments.push({span,start,end:start+value.length});
+      }
+      function paint(){
+        if(!Number.isFinite(audio.duration)||audio.duration<=0)return;
+        const ratio=Math.min(0.999999,Math.max(0,audio.currentTime/audio.duration));
+        const target=Math.floor(ratio*original.length);
+        let active=null;
+        for(const item of segments){if(item.span){const yes=target>=item.start&&target<item.end;item.span.classList.toggle('active',yes);if(yes)active=item;}}
+        if(active){
+          active.span.querySelectorAll('.letter').forEach((el,i)=>el.classList.toggle('active',i===Math.min(el.parentElement.children.length-1,Math.floor((target-active.start)/Math.max(1,active.end-active.start)*el.parentElement.children.length))));
+          active.span.scrollIntoView({block:'nearest',inline:'nearest'});
+        }
+      }
+      audio.addEventListener('timeupdate',paint);audio.addEventListener('seeked',paint);
+      audio.addEventListener('ended',()=>{reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));});
+    </script></body></html>""".replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
+    components.html(page, height=300)
 
 
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
@@ -329,7 +389,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
 
             audio_data = st.session_state.get(audio_key)
             if audio_data:
-                st.audio(audio_data, format="audio/wav")
+                _sinhala_audio_frame(audio_data, speech_text, msg_index)
         else:
             _speech_frame(speech_text, lang_code, msg_index)
 
