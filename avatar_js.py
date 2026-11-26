@@ -332,6 +332,13 @@ TOOLS_JS = AVATAR_JS + r"""
     const language = requestedLanguage && requestedLanguage !== 'auto'
       ? requestedLanguage : detectLanguage(spoken);
     const pieces = chunkText(spoken);
+    const pieceOffsets = [];
+    let pieceSearchFrom = 0;
+    pieces.forEach(function (piece) {
+      const foundAt = spoken.indexOf(piece, pieceSearchFrom);
+      pieceOffsets.push(foundAt >= 0 ? foundAt : pieceSearchFrom);
+      pieceSearchFrom = Math.max(pieceSearchFrom, foundAt + piece.length);
+    });
     const paintBoundary = prepareReader(root, spoken);
     const mySession = bump();
 
@@ -370,7 +377,7 @@ TOOLS_JS = AVATAR_JS + r"""
       };
       u.onboundary = function (ev) {
         if (avatar) avatar.pulse();
-        if (paintBoundary && ev && Number.isFinite(ev.charIndex)) paintBoundary(ev.charIndex);
+        if (paintBoundary && ev && Number.isFinite(ev.charIndex)) paintBoundary((pieceOffsets[i] || 0) + ev.charIndex);
       };
       u.onend = function () { next(i + 1, voice, hadVoice); };
       u.onerror = function (ev) {
