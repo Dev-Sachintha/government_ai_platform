@@ -312,7 +312,7 @@ TOOLS_JS = AVATAR_JS + r"""
         const letters = active.word.querySelectorAll('.gov-letter');
         const offset = Math.max(0, charIndex - active.start);
         let count = 0;
-        for (let i=0;i<offset;i++) if (!(/[\uDC00-\\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
+        for (let i=0;i<offset;i++) if (!(/[\uDC00-\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
         const index = Math.min(letters.length-1, count);
         letters.forEach(function (el,i) { el.classList.toggle('active', i === index); });
         active.word.scrollIntoView({block:'nearest',inline:'nearest'});
