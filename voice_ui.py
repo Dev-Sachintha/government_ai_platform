@@ -37,11 +37,11 @@ def _clean_speech_text(text: str) -> str:
     value = re.sub(rf"(?<!\w)\s*[{dash_class}]\s*(?![{dash_class}])", " ", value)
     # Remove Markdown emphasis markers explicitly (including runs like ** and ***),
     # escaped Markdown punctuation, and remaining formatting characters before TTS.
-    value = re.sub(r"\\\\([\\\\`*_{}\\[\\]()#+.!|>~-])", r"\\1", value)
-    value = re.sub(r"(?<!\\w)(?:\\*{1,3}|_{1,3})(?=\\S)|(?<=\\S)(?:\\*{1,3}|_{1,3})(?!\\w)", " ", value)
-    value = re.sub(r"[\\#\\*\\_\\~\\x60\\>\\|]", " ", value)
-    value = re.sub(r"\\s+", " ", value)
-    return re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"\\([\\*_{}\[\]()#+.!|>~-])", r"\1", value)
+    value = re.sub(r"(?<!\w)(?:\*{1,3}|_{1,3})(?=\S)|(?<=\S)(?:\*{1,3}|_{1,3})(?!\w)", " ", value)
+    value = re.sub(r"[#*_~\x60>|]", " ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
