@@ -86,7 +86,9 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "<div class='gov-reader' data-reader aria-live='off'></div>"
         "</div><script>" + TOOLS_JS + "</script></body></html>"
     )
-    components.html(page, height=225)
+    # Give the reader enough iframe space on narrow phones; Streamlit components
+    # do not automatically grow to fit their inner document.
+    components.html(page, height=330)
 
 
 def _split_sinhala_tts_text(text: str, max_chars: int = 120) -> list[str]:
@@ -172,16 +174,17 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
     page = """<!doctype html><html><head><meta charset="utf-8"><style>
       html,body{margin:0;padding:0;font-family:Inter,system-ui,sans-serif;color:#182033}
       .player{padding:10px;border:1px solid #d8deea;border-radius:14px;background:#f8faff}
-      audio{width:100%;height:38px}
-      .reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:10px;
-        background:#fff;font-size:15px;line-height:1.8;max-height:130px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+      audio{display:block;width:100%;height:42px;max-width:100%;}
+      .reader{box-sizing:border-box;width:100%;margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:10px;
+        background:#fff;font-size:15px;line-height:1.8;height:150px;max-height:150px;overflow-y:auto;overflow-x:hidden;
+        white-space:pre-wrap;overflow-wrap:anywhere;-webkit-overflow-scrolling:touch;}
       .word{border-radius:5px;padding:1px 2px}
       .word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}
       .letter.active{color:#fff;background:#6757d9;border-radius:3px}
       .hint{font-size:11px;opacity:.7;margin-top:5px}
-      @media(max-width:480px){.player{padding:7px}audio{width:100%;height:40px}.reader{font-size:16px;line-height:1.9;padding:10px;max-height:180px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;overflow-wrap:anywhere;word-break:normal}.word.active{background:#ffe082;color:#382600}.letter.active{color:#fff;background:#6757d9;border-radius:3px}}
+      @media(max-width:600px){.player{padding:8px}audio{width:100%;height:44px}.reader{font-size:16px;line-height:1.85;padding:10px;height:170px;max-height:170px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;overflow-wrap:anywhere;word-break:normal}.word.active{background:#ffe082;color:#382600}.letter.active{color:#fff;background:#6757d9;border-radius:3px}}
     </style></head><body><div class="player">
-      <audio id="audio" controls preload="metadata"></audio>
+      <audio id="audio" controls preload="auto" playsinline webkit-playsinline></audio>
       <div class="reader" id="reader"></div>
       <div class="hint">Sinhala word highlighting is synchronized approximately with audio progress.</div>
     </div><script>__AVATAR_SCRIPT__</script><script>
@@ -238,22 +241,32 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
           lastActiveLetter=null;
         }
       }
-      let audioRaf=0;
+      let audioRaf=0, audioTicker=0;
       function audioFrame(){
         if(audio.paused||audio.ended){audioRaf=0;return;}
         paint();avatar.pulse();
         audioRaf=requestAnimationFrame(audioFrame);
+      }
+      // Mobile Safari/Chrome may throttle requestAnimationFrame inside embedded
+      // Streamlit iframes. Keep a media-clock timer as a second progress source.
+      function startHighlightClock(){
+        if(!audioTicker) audioTicker=setInterval(()=>{if(!audio.paused&&!audio.ended)paint();},80);
+        if(!audioRaf) audioRaf=requestAnimationFrame(audioFrame);
+      }
+      function stopHighlightClock(){
+        if(audioTicker){clearInterval(audioTicker);audioTicker=0;}
+        if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}
       }
       audio.addEventListener('loadedmetadata',paint);
       audio.addEventListener('durationchange',paint);
       audio.addEventListener('loadeddata',paint);
       audio.addEventListener('canplay',paint);
       audio.addEventListener('playing',paint);
-      audio.addEventListener('play',()=>{avatar.start();paint();if(!audioRaf)audioRaf=requestAnimationFrame(audioFrame);});
+      audio.addEventListener('play',()=>{avatar.start();paint();startHighlightClock();});
       audio.addEventListener('timeupdate',paint);
       audio.addEventListener('seeked',paint);
-      audio.addEventListener('pause',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}if(!audio.ended)avatar.stop();});
-      audio.addEventListener('ended',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
+      audio.addEventListener('pause',()=>{stopHighlightClock();if(!audio.ended)avatar.stop();});
+      audio.addEventListener('ended',()=>{stopHighlightClock();reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));lastActiveWord=null;lastActiveLetter=null;avatar.stop();});
     </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json).replace("__DURATION__", duration_json)
     components.html(page, height=330)
 
