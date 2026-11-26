@@ -22,19 +22,18 @@ from avatar_js import AVATAR_JS, STT_JS, TOOLS_JS
 def _clean_speech_text(text: str) -> str:
     """Remove HTML/Markdown layout tokens that should never be spoken."""
     value = _html.unescape(text or "")
-    value = re.sub(r"```[\\s\\S]*?```", " ", value)
-    value = re.sub(r"<br\\s*/?>", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"```[\s\S]*?```", " ", value)
+    value = re.sub(r"<br\s*/?>", " ", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", " ", value)
-    value = re.sub(r"^\\s*\\|?\\s*:?-{3,}:?\\s*(?:\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$", " ", value, flags=re.MULTILINE)
-    value = re.sub(r"^\\s*[-*_]{3,}\\s*$", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"^\s*[-*_]{3,}\s*$", " ", value, flags=re.MULTILINE)
     value = re.sub(r"-{3,}", " ", value)
-    value = re.sub(r"\\[([^\\]]+)\\]\\((?:https?://)?[^)]+\\)", r"\\1", value)
-    value = re.sub(r"https?://\\S+", " ", value)
-    value = re.sub(r"^\\s*[-*+]\\s+", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
+    value = re.sub(r"https?://\S+", " ", value)
+    value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
     value = value.replace("|", " ")
     value = re.sub(r"[#*_~`>]", " ", value)
-    return re.sub(r"\\s+", " ", value).strip()
-
+    return re.sub(r"\s+", " ", value).strip()
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -68,7 +67,8 @@ def _speech_frame(text: str, language: str, msg_index: int):
         ".gov-reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:12px;"
         "background:#f8faff;color:#182033;font-size:16px;line-height:1.9;max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;}"
         ".gov-word{border-radius:5px;padding:1px 2px;transition:background .12s,color .12s}"
-        ".gov-word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}"\n        "@media(max-width:480px){body{font-size:14px}.gov-reader{font-size:14px;line-height:1.75;padding:9px;max-height:130px}button{padding:5px 9px;font-size:12px}.gov-status{flex-basis:100%}}"
+        ".gov-word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}"
+        "@media(max-width:480px){body{font-size:14px}.gov-reader{font-size:14px;line-height:1.75;padding:9px;max-height:130px}button{padding:5px 9px;font-size:12px}.gov-status{flex-basis:100%}}"
         ".gov-letter.active{color:#fff;background:#6757d9;border-radius:3px}"
         "</style></head><body>"
         f"<div id='speech-{int(msg_index)}' data-gov-tools data-text='{attr}' data-lang='{lang}' "
@@ -169,7 +169,8 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       .word{border-radius:5px;padding:1px 2px}
       .word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}
       .letter.active{color:#fff;background:#6757d9;border-radius:3px}
-      .hint{font-size:11px;opacity:.7;margin-top:5px}\n      @media(max-width:480px){.player{padding:7px}audio{height:34px}.reader{font-size:14px;line-height:1.7;padding:8px;max-height:115px}}
+      .hint{font-size:11px;opacity:.7;margin-top:5px}
+      @media(max-width:480px){.player{padding:7px}audio{height:34px}.reader{font-size:14px;line-height:1.7;padding:8px;max-height:115px}}
     </style></head><body><div class="player">
       <audio id="audio" controls preload="metadata"></audio>
       <div class="reader" id="reader"></div>
