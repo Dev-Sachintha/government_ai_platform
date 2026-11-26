@@ -10,6 +10,7 @@ Providers (set LLM_PROVIDER in Streamlit "Secrets" or as an environment variable
 import base64
 import json
 import os
+import random
 import re
 import time
 
@@ -574,11 +575,24 @@ def _translation_chunks(text: str, max_chars: int = 2800) -> list[str]:
     return chunks
 
 
+def _translation_error_is_retryable(error: Exception) -> bool:
+    """Return True for rate limits and temporary upstream/network failures."""
+    message = str(error).lower()
+    return (
+        "rate limit" in message
+        or "429" in message
+        or any(f"ai service error {code}" in message for code in (500, 502, 503, 504))
+        or "temporarily unavailable" in message
+        or "cannot reach the ai service" in message
+        or "took too long to respond" in message
+    )
+
+
 def generate_translation(
     cfg: dict, text: str, language_name: str,
     fallback_cfg: dict | None = None, max_chars: int = 2800, retries: int = 3,
 ) -> str:
-    """Translate in chunks, retry HTTP 429 with backoff, then use optional fallback."""
+    """Translate in chunks; retry transient failures, then use the optional fallback."""
     chunks = _translation_chunks(text, max_chars)
     if not chunks:
         raise LLMError("There is no text to translate.")
@@ -593,23 +607,35 @@ def generate_translation(
         last_error = None
         for attempt in range(retries + 1):
             try:
-                result = generate(cfg, prompt, json_mode=False, temperature=0.1, max_tokens=3000, timeout=180).strip()
+                result = generate(
+                    cfg, prompt, json_mode=False, temperature=0.1,
+                    max_tokens=3000, timeout=180,
+                ).strip()
                 if not result:
                     raise LLMError("The translation service returned an empty result.")
                 break
             except LLMError as exc:
                 last_error = exc
-                limited = "rate limit" in str(exc).lower() or "429" in str(exc)
-                if not limited or attempt >= retries:
+                if not _translation_error_is_retryable(exc) or attempt >= retries:
                     break
-                time.sleep(min(2 ** (attempt + 1), 12))
-        if result is None and fallback_cfg and last_error and (
-            "rate limit" in str(last_error).lower() or "429" in str(last_error)
-        ):
+                # Exponential backoff with jitter reduces synchronized retry bursts.
+                wait_seconds = min(2 ** (attempt + 1), 12) + random.uniform(0, 1)
+                time.sleep(wait_seconds)
+
+        if result is None and fallback_cfg and last_error and _translation_error_is_retryable(last_error):
             try:
-                result = generate(fallback_cfg, prompt, json_mode=False, temperature=0.1, max_tokens=3000, timeout=180).strip()
+                result = generate(
+                    fallback_cfg, prompt, json_mode=False, temperature=0.1,
+                    max_tokens=3000, timeout=180,
+                ).strip()
+                if not result:
+                    raise LLMError("The fallback translation service returned an empty result.")
             except LLMError as fallback_error:
-                raise LLMError(f"Primary and fallback translation services failed. Primary: {last_error} Fallback: {fallback_error}")
+                raise LLMError(
+                    "Primary and fallback translation services failed. "
+                    f"Primary: {last_error} Fallback: {fallback_error}"
+                ) from fallback_error
+
         if result is None:
             raise last_error or LLMError("Translation failed.")
         translated_parts.append(result)
