@@ -36,6 +36,8 @@ def _clean_speech_text(text: str) -> str:
     value = re.sub(r"^\s*[-*_]{3,}\s*$", " ", value, flags=re.MULTILINE)
     # Also remove repeated dash characters separated by spaces or using Unicode dashes.
     value = re.sub(r"(?:\s*[-‐‑‒–—]\s*){2,}", " ", value)
+    # Remove standalone dash bullets even when they follow a sentence on the same line.
+    value = re.sub(r"(?<!\w)[-‐‑‒–—](?=\s*\w)", " ", value)
     value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
     value = re.sub(r"https?://\S+", " ", value)
     value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
