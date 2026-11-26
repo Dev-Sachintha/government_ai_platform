@@ -307,14 +307,16 @@ TOOLS_JS = AVATAR_JS + r"""
       const value = match[0], start = match.index;
       if (/^\s+$/u.test(value)) { reader.appendChild(document.createTextNode(value)); continue; }
       const word = document.createElement('span'); word.className = 'gov-word';
-      const chars = (typeof Intl !== 'undefined' && Intl.Segmenter)
-        ? Array.from(new Intl.Segmenter(undefined, {granularity:'grapheme'}).segment(value), x => x.segment)
-        : Array.from(value);
-      chars.forEach(function (ch) {
+      const parts = (typeof Intl !== 'undefined' && Intl.Segmenter)
+        ? Array.from(new Intl.Segmenter(undefined, {granularity:'grapheme'}).segment(value), x => ({text:x.segment,index:x.index}))
+        : (function () { const out=[]; let at=0; Array.from(value).forEach(function(ch){out.push({text:ch,index:at});at+=ch.length;});return out; })();
+      const charStarts = [];
+      parts.forEach(function (part) {
+        charStarts.push(part.index);
         const letter = document.createElement('span'); letter.className = 'gov-letter';
-        letter.textContent = ch; word.appendChild(letter);
+        letter.textContent = part.text; word.appendChild(letter);
       });
-      reader.appendChild(word); nodes.push({start:start,end:start+value.length,word:word});
+      reader.appendChild(word); nodes.push({start:start,end:start+value.length,word:word,charStarts:charStarts});
     }
     return function (charIndex) {
       let active = null;
@@ -326,9 +328,12 @@ TOOLS_JS = AVATAR_JS + r"""
       if (active) {
         const letters = active.word.querySelectorAll('.gov-letter');
         const offset = Math.max(0, charIndex - active.start);
-        let count = 0;
-        for (let i=0;i<offset;i++) if (!(/[\uDC00-\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
-        const index = Math.min(letters.length-1, count);
+        let index = 0;
+        for (let i=0;i<active.charStarts.length;i++) {
+          if (active.charStarts[i] <= offset) index = i;
+          else break;
+        }
+        index = Math.min(letters.length-1, index);
         letters.forEach(function (el,i) { el.classList.toggle('active', i === index); });
         active.word.scrollIntoView({block:'nearest',inline:'nearest'});
       }
