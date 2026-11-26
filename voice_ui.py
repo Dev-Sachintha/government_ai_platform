@@ -164,7 +164,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       const wordRe=/\\S+|\\s+/gu; let match;
       while((match=wordRe.exec(original))!==null){
         const value=match[0], start=match.index;
-        if(/^\\s+$/u.test(value)){segments.push({space:value});continue;}
+        if(/^\\s+$/u.test(value)){reader.appendChild(document.createTextNode(value));segments.push({space:value});continue;}
         const span=document.createElement('span');span.className='word';
         const letterParts=(typeof Intl!=='undefined'&&Intl.Segmenter)
           ? Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(value),x=>x.segment)
