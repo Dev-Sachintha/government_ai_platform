@@ -258,7 +258,7 @@ TOOLS_JS = AVATAR_JS + r"""
   // Online fallback: Google Translate TTS audio. Unlike browser speech voices,
   // this does not require a language voice to be installed on the user's device.
   // The request is made only after the user presses Listen and the local voice is missing.
-  function speakCloud(root, pieces, language, mySession, avatar) {
+  function speakCloud(root, pieces, language, mySession, avatar, paintBoundary, pieceOffsets) {
     const base = (language || 'en-US').split('-')[0].toLowerCase();
     let index = 0;
     setStatus(root, 'No device voice found. Trying online ' + langName(language) + ' voice…');
@@ -270,14 +270,43 @@ TOOLS_JS = AVATAR_JS + r"""
         if (avatar) avatar.stop();
         return;
       }
-      const q = encodeURIComponent(pieces[index++]);
-      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=gtx&tl=' + encodeURIComponent(base) + '&q=' + q;
-      // Create and play the audio in the same iframe that received the Listen click.
-      // Cross-window Audio objects can lose transient user activation in some browsers.
+      const pieceIndex = index++;
+      const piece = pieces[pieceIndex];
+      const offset = pieceOffsets[pieceIndex] || 0;
+      const url = 'https://translate.google.com/translate_tts?ie=UTF-8&client=gtx&tl=' + encodeURIComponent(base) + '&q=' + encodeURIComponent(piece);
+      // Keep highlighting active when Android has no matching installed speech voice.
       const audio = new Audio(url);
       cloudAudio = audio;
-      audio.onended = playNext;
+      let raf = 0, startedAt = 0, knownDuration = 0;
+      function paintCloudProgress() {
+        if (mySession !== cur() || audio.paused || audio.ended) { raf = 0; return; }
+        const duration = (Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : knownDuration;
+        const elapsed = Math.max(0, (Date.now() - startedAt) / 1000);
+        const ratio = duration > 0 ? Math.min(0.999, Math.max(0, audio.currentTime / duration))
+          : Math.min(0.999, elapsed / Math.max(1, piece.length / 13));
+        if (paintBoundary) paintBoundary(offset + Math.floor(ratio * Math.max(1, piece.length)));
+        if (avatar) avatar.pulse();
+        raf = requestAnimationFrame(paintCloudProgress);
+      }
+      audio.addEventListener('loadedmetadata', function () {
+        if (Number.isFinite(audio.duration) && audio.duration > 0) knownDuration = audio.duration;
+      });
+      audio.addEventListener('play', function () {
+        startedAt = Date.now();
+        if (paintBoundary) paintBoundary(offset);
+        if (!raf) raf = requestAnimationFrame(paintCloudProgress);
+      });
+      audio.addEventListener('timeupdate', function () {
+        const duration = (Number.isFinite(audio.duration) && audio.duration > 0) ? audio.duration : knownDuration;
+        if (duration > 0 && paintBoundary) paintBoundary(offset + Math.floor(Math.min(0.999, audio.currentTime / duration) * Math.max(1, piece.length)));
+      });
+      audio.onended = function () {
+        if (raf) cancelAnimationFrame(raf);
+        if (paintBoundary) paintBoundary(offset + piece.length);
+        playNext();
+      };
       audio.onerror = function () {
+        if (raf) cancelAnimationFrame(raf);
         if (mySession !== cur()) return;
         cloudAudio = null;
         setStatus(root, 'Online ' + langName(language) + ' voice failed. Check internet and try Listen again.');
@@ -285,6 +314,7 @@ TOOLS_JS = AVATAR_JS + r"""
       };
       const result = audio.play();
       if (result && result.catch) result.catch(function (err) {
+        if (raf) cancelAnimationFrame(raf);
         if (mySession !== cur()) return;
         cloudAudio = null;
         const reason = err && (err.name || err.message) ? (err.name || err.message) : 'unknown playback restriction';
@@ -335,7 +365,11 @@ TOOLS_JS = AVATAR_JS + r"""
         }
         index = Math.min(letters.length-1, index);
         letters.forEach(function (el,i) { el.classList.toggle('active', i === index); });
-        active.word.scrollIntoView({block:'nearest',inline:'nearest'});
+        // Scroll only the reader panel; scrollIntoView may scroll the full page on mobile.
+        const readerRect = reader.getBoundingClientRect();
+        const wordRect = active.word.getBoundingClientRect();
+        if (wordRect.top < readerRect.top + 4) reader.scrollTop -= readerRect.top - wordRect.top + 6;
+        else if (wordRect.bottom > readerRect.bottom - 4) reader.scrollTop += wordRect.bottom - readerRect.bottom + 6;
       }
     };
   }
@@ -402,9 +436,10 @@ TOOLS_JS = AVATAR_JS + r"""
         // progress so the active word/letter still moves while the utterance plays.
         progressTimer = setInterval(function () {
           if (mySession !== cur() || !paintBoundary) return;
-          const elapsed = Date.now() - (lastBoundaryAt || utteranceStartedAt);
+          const elapsed = Math.max(0, Date.now() - utteranceStartedAt);
+          // Android engines may omit onboundary events; estimate from utterance start.
           const estimated = Math.min(Math.max(0, u.text.length - 1),
-            lastBoundaryChar + Math.floor(elapsed / 78));
+            Math.max(lastBoundaryChar, Math.floor(elapsed / 95)));
           paintBoundary((pieceOffsets[i] || 0) + estimated);
           if (avatar) avatar.pulse();
         }, 75);
@@ -451,7 +486,7 @@ TOOLS_JS = AVATAR_JS + r"""
         if (avatar) avatar.stop();
         return;
       }
-      speakCloud(root, pieces, language, mySession, avatar);
+      speakCloud(root, pieces, language, mySession, avatar, paintBoundary, pieceOffsets);
       return;
     }
     // Chrome needs a short pause between cancel() and speak().
