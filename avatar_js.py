@@ -287,10 +287,10 @@ TOOLS_JS = AVATAR_JS + r"""
     if (!reader) return null;
     reader.textContent = '';
     const nodes = [];
-    const re = /\\S+|\\s+/gu; let match;
+    const re = /\S+|\s+/gu; let match;
     while ((match = re.exec(spoken)) !== null) {
       const value = match[0], start = match.index;
-      if (/^\\s+$/u.test(value)) { reader.appendChild(document.createTextNode(value)); continue; }
+      if (/^\s+$/u.test(value)) { reader.appendChild(document.createTextNode(value)); continue; }
       const word = document.createElement('span'); word.className = 'gov-word';
       const chars = (typeof Intl !== 'undefined' && Intl.Segmenter)
         ? Array.from(new Intl.Segmenter(undefined, {granularity:'grapheme'}).segment(value), x => x.segment)
@@ -312,7 +312,7 @@ TOOLS_JS = AVATAR_JS + r"""
         const letters = active.word.querySelectorAll('.gov-letter');
         const offset = Math.max(0, charIndex - active.start);
         let count = 0;
-        for (let i=0;i<offset;i++) if (!(/[\\uDC00-\\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
+        for (let i=0;i<offset;i++) if (!(/[\uDC00-\\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
         const index = Math.min(letters.length-1, count);
         letters.forEach(function (el,i) { el.classList.toggle('active', i === index); });
         active.word.scrollIntoView({block:'nearest',inline:'nearest'});
