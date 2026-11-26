@@ -821,29 +821,52 @@ def render_ai_chat_interface(
     # extremely narrow on phones; tables can scroll horizontally when needed.
     st.markdown(
         """<style>
-        @media (max-width: 768px) {
-          [data-testid="stChatMessage"] { padding: .55rem .35rem; }
-          [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
-            min-width: 0; overflow-wrap: anywhere;
+        /* Fluid page width: desktop, tablet and phone */
+        [data-testid="stMainBlockContainer"], section.main > div.block-container {
+          width:100%; max-width:1500px; margin-inline:auto;
+          padding-inline:clamp(.65rem,2.2vw,2rem);
+        }
+        [data-testid="stChatMessage"] { min-width:0; max-width:100%; }
+        [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
+          min-width:0; max-width:100%; overflow-wrap:anywhere;
+        }
+        [data-testid="stChatMessage"] table {
+          display:block; width:100%; max-width:100%; overflow-x:auto;
+          border-collapse:collapse; -webkit-overflow-scrolling:touch;
+        }
+        [data-testid="stChatMessage"] th,
+        [data-testid="stChatMessage"] td {
+          min-width:clamp(110px,16vw,190px); max-width:68vw;
+          padding:clamp(6px,.8vw,12px); vertical-align:top;
+          overflow-wrap:anywhere;
+        }
+        /* Tablet landscape and smaller: wrap controls into comfortable rows */
+        @media (max-width: 1024px) {
+          [data-testid="stHorizontalBlock"] { flex-wrap:wrap; gap:.6rem; }
+          [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex:1 1 30%; min-width:150px;
           }
-          [data-testid="stChatMessage"] table {
-            display: block; width: 100%; max-width: 100%;
-            overflow-x: auto; border-collapse: collapse;
+          [data-testid="stChatMessage"] { padding:.55rem .35rem; }
+        }
+        /* Phones: two-column controls, full-width chat and compact spacing */
+        @media (max-width: 600px) {
+          [data-testid="stMainBlockContainer"], section.main > div.block-container {
+            padding-inline:.55rem; padding-top:.65rem;
           }
+          [data-testid="stHorizontalBlock"] { gap:.45rem; }
+          [data-testid="stHorizontalBlock"] > [data-testid="column"] {
+            flex:1 1 46%; min-width:calc(50% - .5rem);
+          }
+          [data-testid="stChatMessage"] { padding:.45rem .25rem; }
           [data-testid="stChatMessage"] th,
           [data-testid="stChatMessage"] td {
-            min-width: 145px; max-width: 65vw;
-            padding: 7px 9px; vertical-align: top;
-            overflow-wrap: anywhere;
+            min-width:125px; max-width:72vw; padding:6px 8px;
           }
-          [data-testid="stHorizontalBlock"] {
-            flex-wrap: wrap; gap: .55rem;
-          }
-          [data-testid="stHorizontalBlock"] > [data-testid="column"] {
-            flex: 1 1 44%; min-width: 138px;
+          [data-testid="stChatInput"] textarea {
+            font-size:16px !important; line-height:1.45;
           }
         }
-        </style>""",
+        </style>"""",
         unsafe_allow_html=True,
     )
     active_tid = st.session_state.get("active_thread_id")
