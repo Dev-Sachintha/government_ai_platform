@@ -255,7 +255,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       audio.addEventListener('pause',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}if(!audio.ended)avatar.stop();});
       audio.addEventListener('ended',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
     </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json).replace("__DURATION__", duration_json)
-    components.html(page, height=245)
+    components.html(page, height=330)
 
 
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
