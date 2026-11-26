@@ -383,8 +383,26 @@ TOOLS_JS = AVATAR_JS + r"""
       const u = new SYN.SpeechSynthesisUtterance(pieces[i]);
       u.lang = language; u.rate = 1;
       if (voice) u.voice = voice;
+      let progressTimer = 0, utteranceStartedAt = 0, lastBoundaryChar = 0, lastBoundaryAt = 0;
+      function clearProgressTimer() {
+        if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
+      }
       u.onstart = function () {
         if (mySession !== cur()) return;
+        utteranceStartedAt = Date.now();
+        lastBoundaryAt = utteranceStartedAt;
+        lastBoundaryChar = 0;
+        clearProgressTimer();
+        // Some mobile speech engines do not emit onboundary. Estimate character
+        // progress so the active word/letter still moves while the utterance plays.
+        progressTimer = setInterval(function () {
+          if (mySession !== cur() || !paintBoundary) return;
+          const elapsed = Date.now() - (lastBoundaryAt || utteranceStartedAt);
+          const estimated = Math.min(Math.max(0, u.text.length - 1),
+            lastBoundaryChar + Math.floor(elapsed / 78));
+          paintBoundary((pieceOffsets[i] || 0) + estimated);
+          if (avatar) avatar.pulse();
+        }, 75);
         setStatus(root, hadVoice
           ? 'Speaking (' + langName(language) + ')…'
           : 'Speaking (' + langName(language) + ')… this device has no ' + langName(language) +
@@ -392,10 +410,15 @@ TOOLS_JS = AVATAR_JS + r"""
       };
       u.onboundary = function (ev) {
         if (avatar) avatar.pulse();
-        if (paintBoundary && ev && Number.isFinite(ev.charIndex)) paintBoundary((pieceOffsets[i] || 0) + ev.charIndex);
+        if (ev && Number.isFinite(ev.charIndex)) {
+          lastBoundaryChar = ev.charIndex;
+          lastBoundaryAt = Date.now();
+          if (paintBoundary) paintBoundary((pieceOffsets[i] || 0) + ev.charIndex);
+        }
       };
-      u.onend = function () { next(i + 1, voice, hadVoice); };
+      u.onend = function () { clearProgressTimer(); next(i + 1, voice, hadVoice); };
       u.onerror = function (ev) {
+        clearProgressTimer();
         if (mySession !== cur()) return;
         if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
         const reason = ev && ev.error ? ev.error : 'unknown';
