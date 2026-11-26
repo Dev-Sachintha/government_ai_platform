@@ -153,19 +153,23 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                 st.error("Translation needs the configured AI provider. Open the main chat to use this feature.")
             else:
                 try:
-                    # Optional independent provider for translation only.
-                    fallback_secrets = {
+                    # A dedicated translation provider takes priority when configured.
+                    # The main chat provider remains the automatic fallback.
+                    translation_secrets = {
                         "LLM_PROVIDER": st.secrets.get("TRANSLATION_LLM_PROVIDER", os.getenv("TRANSLATION_LLM_PROVIDER", "")),
                         "LLM_BASE_URL": st.secrets.get("TRANSLATION_LLM_BASE_URL", os.getenv("TRANSLATION_LLM_BASE_URL", "")),
                         "LLM_API_KEY": st.secrets.get("TRANSLATION_LLM_API_KEY", os.getenv("TRANSLATION_LLM_API_KEY", "")),
                         "LLM_MODEL": st.secrets.get("TRANSLATION_LLM_MODEL", os.getenv("TRANSLATION_LLM_MODEL", "")),
                     }
-                    fallback_cfg = None
-                    if all(str(v or "").strip() for v in fallback_secrets.values()):
-                        fallback_cfg = llm.load_config(fallback_secrets)
-                    with st.spinner("Translating answer (automatic splitting and retry enabled)…"):
+                    translation_cfg = None
+                    if all(str(v or "").strip() for v in translation_secrets.values()):
+                        translation_cfg = llm.load_config(translation_secrets)
+
+                    primary_cfg = translation_cfg or llm_cfg
+                    fallback_cfg = llm_cfg if translation_cfg else None
+                    with st.spinner("Translating answer (automatic splitting, retry and fallback enabled)…"):
                         translated = llm.generate_translation(
-                            llm_cfg, original, language_name, fallback_cfg=fallback_cfg
+                            primary_cfg, original, language_name, fallback_cfg=fallback_cfg
                         )
                     st.session_state[cache_key] = translated
                 except Exception as exc:
