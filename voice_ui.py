@@ -22,26 +22,26 @@ from avatar_js import AVATAR_JS, STT_JS, TOOLS_JS
 def _clean_speech_text(text: str) -> str:
     """Convert Markdown/HTML answer text to plain, speakable text."""
     value = text or ""
-    # Some generated answers contain escaped HTML, occasionally escaped twice.
+    # Unescape encoded HTML, including content escaped twice by upstream output.
     for _ in range(2):
         value = _html.unescape(value)
-    value = re.sub(r"```[\\s\\S]*?```", " ", value)
-    value = re.sub(r"<br\\s*/?\\s*>", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"\x60\x60\x60[\s\S]*?\x60\x60\x60", " ", value)
+    value = re.sub(r"<br\s*/?\s*>", " ", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", " ", value)
-    # Remove Markdown table separator rows and horizontal rules.
+    # Markdown table separator rows and horizontal rules.
     value = re.sub(
-        r"^\\s*\\|?\\s*:?-{3,}:?\\s*(?:\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$",
+        r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$",
         " ", value, flags=re.MULTILINE,
     )
-    value = re.sub(r"^\\s*[-*_]{3,}\\s*$", " ", value, flags=re.MULTILINE)
-    # Also remove dash runs that have spaces or use Unicode dash characters.
-    value = re.sub(r"(?:\\s*[-‐‑‒–—]\\s*){2,}", " ", value)
-    value = re.sub(r"\\[([^\\]]+)\\]\\((?:https?://)?[^)]+\\)", r"\\1", value)
-    value = re.sub(r"https?://\\S+", " ", value)
-    value = re.sub(r"^\\s*[-*+]\\s+", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"^\s*[-*_]{3,}\s*$", " ", value, flags=re.MULTILINE)
+    # Also remove repeated dash characters separated by spaces or using Unicode dashes.
+    value = re.sub(r"(?:\s*[-‐‑‒–—]\s*){2,}", " ", value)
+    value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
+    value = re.sub(r"https?://\S+", " ", value)
+    value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
     value = value.replace("|", " ")
-    value = re.sub(r"[#*_~`>]", " ", value)
-    return re.sub(r"\\s+", " ", value).strip()
+    value = re.sub(r"[#*_~\x60>]", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -65,7 +65,8 @@ _TTS_LANGUAGES = {
 
 def _speech_frame(text: str, language: str, msg_index: int):
     """Render Listen controls wired to the animated talking avatar in the parent page."""
-    text = _clean_speech_text(text or "")\n    attr = _html.escape(text, quote=True)
+    text = _clean_speech_text(text or "")
+    attr = _html.escape(text, quote=True)
     lang = _html.escape(language or "auto", quote=True)
     page = (
         "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
