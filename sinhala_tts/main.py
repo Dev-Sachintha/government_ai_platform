@@ -29,10 +29,29 @@ MODEL_REPO = os.getenv("SINHALA_TTS_MODEL_REPO", "chaturadilan/dilu-tts")
 MODEL_FILE = "onnx/si_LK-dilu-medium.onnx"
 CONFIG_FILE = "onnx/si_LK-dilu-medium.onnx.json"
 MAX_TEXT_LENGTH = int(os.getenv("SINHALA_TTS_MAX_CHARS", "2500"))
-# Render Free has a small CPU quota. Avoid ONNX Runtime creating a large
-# thread pool based on the host's physical core count.
-ORT_THREADS = max(1, min(4, int(os.getenv("PIPER_ORT_THREADS", "1"))))
-ORT_INTER_OP_THREADS = max(1, min(2, int(os.getenv("PIPER_ORT_INTER_OP_THREADS", "1"))))
+# Keep ONNX Runtime thread pools small on CPU-limited Render instances.
+ORT_THREADS = max(1, min(2, int(os.getenv("PIPER_ORT_THREADS", "1"))))
+ORT_INTER_OP_THREADS = max(1, min(1, int(os.getenv("PIPER_ORT_INTER_OP_THREADS", "1"))))
+# The default CPU arena and memory-pattern planner can retain sizeable
+# allocations after inference. Disable them by default to reduce peak/retained
+# memory on small containers. Set either variable to "false" to re-enable.
+ORT_DISABLE_CPU_MEM_ARENA = os.getenv("PIPER_ORT_DISABLE_CPU_MEM_ARENA", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+ORT_DISABLE_MEM_PATTERN = os.getenv("PIPER_ORT_DISABLE_MEM_PATTERN", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+# BASIC uses less optimization workspace than ALL; it may trade some speed
+# for a smaller memory footprint. Override with "all" on larger instances.
+ORT_GRAPH_OPT_LEVEL = os.getenv("PIPER_ORT_GRAPH_OPT_LEVEL", "basic").lower()
+_GRAPH_OPT_LEVELS = {
+    "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
+    "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+    "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+    "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+}
+if ORT_GRAPH_OPT_LEVEL not in _GRAPH_OPT_LEVELS:
+    raise RuntimeError("PIPER_ORT_GRAPH_OPT_LEVEL must be disable, basic, extended, or all.")
 LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.0"))
 if not 0.5 <= LENGTH_SCALE <= 2.0:
     raise RuntimeError("SINHALA_TTS_LENGTH_SCALE must be between 0.5 and 2.0.")
@@ -80,15 +99,17 @@ async def lifespan(app: FastAPI):
         cache_dir=str(cache_dir),
     )
     logger.info("Loading Sinhala voice model repo=%s model_file=%s", MODEL_REPO, MODEL_FILE)
-    # Build the ONNX session explicitly so its CPU thread pool respects the
-    # Render instance's CPU quota instead of guessing from host core count.
     with open(config_path, "r", encoding="utf-8") as config_file:
         voice_config = PiperConfig.from_dict(json.load(config_file))
+
     session_options = ort.SessionOptions()
     session_options.intra_op_num_threads = ORT_THREADS
     session_options.inter_op_num_threads = ORT_INTER_OP_THREADS
     session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    session_options.graph_optimization_level = _GRAPH_OPT_LEVELS[ORT_GRAPH_OPT_LEVEL]
+    session_options.enable_cpu_mem_arena = not ORT_DISABLE_CPU_MEM_ARENA
+    session_options.enable_mem_pattern = not ORT_DISABLE_MEM_PATTERN
+
     _voice = PiperVoice(
         config=voice_config,
         session=ort.InferenceSession(
@@ -98,9 +119,15 @@ async def lifespan(app: FastAPI):
         ),
     )
     logger.info(
-        "Sinhala voice model loaded successfully rss_peak_mb=%s ort_intra_threads=%s "
-        "ort_inter_threads=%s length_scale=%s",
-        _memory_rss_mb(), ORT_THREADS, ORT_INTER_OP_THREADS, LENGTH_SCALE,
+        "Sinhala voice model loaded rss_peak_mb=%s intra_threads=%s inter_threads=%s "
+        "graph_optimization=%s cpu_mem_arena=%s mem_pattern=%s length_scale=%s",
+        _memory_rss_mb(),
+        ORT_THREADS,
+        ORT_INTER_OP_THREADS,
+        ORT_GRAPH_OPT_LEVEL,
+        not ORT_DISABLE_CPU_MEM_ARENA,
+        not ORT_DISABLE_MEM_PATTERN,
+        LENGTH_SCALE,
     )
     yield
     _voice = None
@@ -108,7 +135,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Government AI Platform — Sinhala TTS",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -190,12 +217,11 @@ def synthesize(
     output = io.BytesIO()
     synthesis_started = time.monotonic()
     logger.info(
-        "synthesis_start chars=%s cf_ray=%s rss_peak_mb=%s",
-        len(text), "see_request_log", _memory_rss_mb(),
+        "synthesis_start chars=%s rss_peak_mb=%s",
+        len(text), _memory_rss_mb(),
     )
     try:
-        # Piper's ONNX Runtime session is shared; serialize inference for safety on
-        # small CPU instances and avoid concurrent model-session contention.
+        # A single shared Piper/ONNX session must never run two inferences at once.
         with _voice_lock:
             with wave.open(output, "wb") as wav_file:
                 _voice.synthesize_wav(text, wav_file, syn_config=SYNTHESIS_CONFIG)
@@ -211,7 +237,6 @@ def synthesize(
         "synthesis_complete chars=%s audio_bytes=%s elapsed_s=%.2f rss_peak_mb=%s",
         len(text), len(audio_bytes), time.monotonic() - synthesis_started, _memory_rss_mb(),
     )
-
     return Response(
         content=audio_bytes,
         media_type="audio/wav",
