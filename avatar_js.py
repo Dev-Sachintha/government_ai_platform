@@ -60,17 +60,63 @@ function getAvatar() {
   img.onerror = function () { tried++; if (tried < 3) host.setTimeout(loadImage, tried === 2 ? 800 : 0); };
   loadImage();
 
+  // Face animation overlay: brief natural blinks and very subtle cheek lift/blush.
+  // Coordinates are in the 720x720 avatar image space.
+  const EYES = [{x:294,y:326,w:43,h:15},{x:414,y:326,w:43,h:15}];
+  const CHEEKS = [{x:274,y:438},{x:445,y:438}];
   function draw(m) {
     if (!ready) return;
     ctx.drawImage(img, 0, 0);
+
+    const t = host.performance.now();
+    // A short blink about every 3.8–6.2 seconds, with a quick close/open curve.
+    const cycle = (t % 5000) / 5000;
+    const blinkCenter = 0.78;
+    const blinkDistance = Math.abs(cycle - blinkCenter);
+    const blink = Math.max(0, 1 - blinkDistance / 0.035);
+    const lid = blink * 0.94;
+
+    // Mouth/jaw animation.
     const dy = Math.round(MAXDY * m);
-    if (dy < 1) return;
-    ctx.fillStyle = 'rgb(34,8,10)';
-    ctx.beginPath(); ctx.ellipse(CX, YS + (dy - 2) / 2, 27, (dy + 12) / 2, 0, 0, Math.PI * 2); ctx.fill();
-    if (m > 0.35) { ctx.fillStyle = 'rgb(222,210,190)'; ctx.fillRect(CX - 17, YS - 2, 34, 6); }
-    ctx.fillStyle = 'rgb(120,40,48)';
-    ctx.beginPath(); ctx.ellipse(CX, YS + dy - 5, 13, 6, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.drawImage(strip, SX, YS + dy);
+    if (dy >= 1) {
+      ctx.fillStyle = 'rgb(34,8,10)';
+      ctx.beginPath(); ctx.ellipse(CX, YS + (dy - 2) / 2, 27, (dy + 12) / 2, 0, 0, Math.PI * 2); ctx.fill();
+      if (m > 0.35) { ctx.fillStyle = 'rgb(222,210,190)'; ctx.fillRect(CX - 17, YS - 2, 34, 6); }
+      ctx.fillStyle = 'rgb(120,40,48)';
+      ctx.beginPath(); ctx.ellipse(CX, YS + dy - 5, 13, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.drawImage(strip, SX, YS + dy);
+    }
+
+    // Blinking eyelids: gently cover the eye area using a soft skin-tone lid.
+    if (lid > 0.02) {
+      EYES.forEach(function (eye) {
+        const lidHeight = eye.h * lid;
+        ctx.save();
+        ctx.fillStyle = 'rgba(218,177,145,' + Math.min(0.98, lid) + ')';
+        ctx.beginPath();
+        ctx.ellipse(eye.x + eye.w / 2, eye.y + eye.h / 2, eye.w / 2 + 2, Math.max(1, lidHeight), 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(75,42,35,' + Math.min(0.75, lid) + ')';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(eye.x, eye.y + eye.h / 2);
+        ctx.quadraticCurveTo(eye.x + eye.w / 2, eye.y + eye.h / 2 + lidHeight * 0.5, eye.x + eye.w, eye.y + eye.h / 2);
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    // Cheeks softly lift while speaking; keep the effect low-opacity and brief.
+    if (m > 0.03) {
+      const cheekAlpha = Math.min(0.12, 0.035 + m * 0.085);
+      const lift = Math.sin(t / 170) * m * 2.5;
+      CHEEKS.forEach(function (cheek) {
+        ctx.fillStyle = 'rgba(235,112,126,' + cheekAlpha + ')';
+        ctx.beginPath();
+        ctx.ellipse(cheek.x, cheek.y - lift, 28 + m * 2, 15 + m, 0, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
   }
 
   let speaking = false, m = 0, lastBoundary = 0, raf = 0, hideTimer = 0;
