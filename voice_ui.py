@@ -16,7 +16,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import llm
 
-from avatar_js import STT_JS, TOOLS_JS
+from avatar_js import AVATAR_JS, STT_JS, TOOLS_JS
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -156,8 +156,9 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       <audio id="audio" controls preload="metadata"></audio>
       <div class="reader" id="reader"></div>
       <div class="hint">Sinhala word highlighting is synchronized approximately with audio progress.</div>
-    </div><script>
+    </div><script>__AVATAR_SCRIPT__</script><script>
       const source=__AUDIO__, original=__TEXT__;
+      const avatar=getAvatar();
       const audio=document.getElementById('audio'), reader=document.getElementById('reader');
       audio.src=source;
       const segments=[];
@@ -183,9 +184,12 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
           active.span.scrollIntoView({block:'nearest',inline:'nearest'});
         }
       }
-      audio.addEventListener('timeupdate',paint);audio.addEventListener('seeked',paint);
-      audio.addEventListener('ended',()=>{reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));});
-    </script></body></html>""".replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
+      audio.addEventListener('play',()=>avatar.start());
+      audio.addEventListener('timeupdate',()=>{paint();avatar.pulse();});
+      audio.addEventListener('seeked',paint);
+      audio.addEventListener('pause',()=>{if(!audio.ended)avatar.stop();});
+      audio.addEventListener('ended',()=>{reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
+    </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
     components.html(page, height=300)
 
 
