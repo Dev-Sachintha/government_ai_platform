@@ -20,20 +20,28 @@ import llm
 from avatar_js import AVATAR_JS, STT_JS, TOOLS_JS
 
 def _clean_speech_text(text: str) -> str:
-    """Remove HTML/Markdown layout tokens that should never be spoken."""
-    value = _html.unescape(text or "")
-    value = re.sub(r"```[\s\S]*?```", " ", value)
-    value = re.sub(r"<br\s*/?>", " ", value, flags=re.IGNORECASE)
+    """Convert Markdown/HTML answer text to plain, speakable text."""
+    value = text or ""
+    # Some generated answers contain escaped HTML, occasionally escaped twice.
+    for _ in range(2):
+        value = _html.unescape(value)
+    value = re.sub(r"```[\\s\\S]*?```", " ", value)
+    value = re.sub(r"<br\\s*/?\\s*>", " ", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", " ", value)
-    value = re.sub(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", " ", value, flags=re.MULTILINE)
-    value = re.sub(r"^\s*[-*_]{3,}\s*$", " ", value, flags=re.MULTILINE)
-    value = re.sub(r"-{3,}", " ", value)
-    value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
-    value = re.sub(r"https?://\S+", " ", value)
-    value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
+    # Remove Markdown table separator rows and horizontal rules.
+    value = re.sub(
+        r"^\\s*\\|?\\s*:?-{3,}:?\\s*(?:\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$",
+        " ", value, flags=re.MULTILINE,
+    )
+    value = re.sub(r"^\\s*[-*_]{3,}\\s*$", " ", value, flags=re.MULTILINE)
+    # Also remove dash runs that have spaces or use Unicode dash characters.
+    value = re.sub(r"(?:\\s*[-‐‑‒–—]\\s*){2,}", " ", value)
+    value = re.sub(r"\\[([^\\]]+)\\]\\((?:https?://)?[^)]+\\)", r"\\1", value)
+    value = re.sub(r"https?://\\S+", " ", value)
+    value = re.sub(r"^\\s*[-*+]\\s+", " ", value, flags=re.MULTILINE)
     value = value.replace("|", " ")
     value = re.sub(r"[#*_~`>]", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    return re.sub(r"\\s+", " ", value).strip()
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -57,7 +65,7 @@ _TTS_LANGUAGES = {
 
 def _speech_frame(text: str, language: str, msg_index: int):
     """Render Listen controls wired to the animated talking avatar in the parent page."""
-    attr = _html.escape(text or "", quote=True)
+    text = _clean_speech_text(text or "")\n    attr = _html.escape(text, quote=True)
     lang = _html.escape(language or "auto", quote=True)
     page = (
         "<!doctype html><html><head><meta charset='utf-8'><style>" + _BASE_CSS +
@@ -203,11 +211,18 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
           active.span.scrollIntoView({block:'nearest',inline:'nearest'});
         }
       }
-      audio.addEventListener('play',()=>avatar.start());
-      audio.addEventListener('timeupdate',()=>{paint();avatar.pulse();});
+      let audioRaf=0;
+      function audioFrame(){
+        if(audio.paused||audio.ended){audioRaf=0;return;}
+        paint();avatar.pulse();
+        audioRaf=requestAnimationFrame(audioFrame);
+      }
+      audio.addEventListener('loadedmetadata',paint);
+      audio.addEventListener('play',()=>{avatar.start();if(!audioRaf)audioRaf=requestAnimationFrame(audioFrame);});
+      audio.addEventListener('timeupdate',paint);
       audio.addEventListener('seeked',paint);
-      audio.addEventListener('pause',()=>{if(!audio.ended)avatar.stop();});
-      audio.addEventListener('ended',()=>{reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
+      audio.addEventListener('pause',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}if(!audio.ended)avatar.stop();});
+      audio.addEventListener('ended',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
     </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
     components.html(page, height=245)
 
@@ -257,7 +272,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
                     st.session_state[cache_key] = translated
                 except Exception as exc:
                     st.error(f"Translation failed: {exc}")
-        speech_text = st.session_state.get(cache_key, "")
+        speech_text = _clean_speech_text(st.session_state.get(cache_key, ""))
         if not speech_text:
             st.caption("Select a language and press Translate before listening.")
     else:
