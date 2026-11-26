@@ -52,10 +52,22 @@ _GRAPH_OPT_LEVELS = {
 }
 if ORT_GRAPH_OPT_LEVEL not in _GRAPH_OPT_LEVELS:
     raise RuntimeError("PIPER_ORT_GRAPH_OPT_LEVEL must be disable, basic, extended, or all.")
-LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.0"))
+# Slightly slower, lower-variation defaults can improve Sinhala word clarity.
+# Tune these in Render environment variables without changing the application.
+LENGTH_SCALE = float(os.getenv("SINHALA_TTS_LENGTH_SCALE", "1.05"))
+NOISE_SCALE = float(os.getenv("SINHALA_TTS_NOISE_SCALE", "0.60"))
+NOISE_W = float(os.getenv("SINHALA_TTS_NOISE_W", "0.70"))
 if not 0.5 <= LENGTH_SCALE <= 2.0:
     raise RuntimeError("SINHALA_TTS_LENGTH_SCALE must be between 0.5 and 2.0.")
-SYNTHESIS_CONFIG = SynthesisConfig(length_scale=LENGTH_SCALE)
+if not 0.0 <= NOISE_SCALE <= 2.0:
+    raise RuntimeError("SINHALA_TTS_NOISE_SCALE must be between 0.0 and 2.0.")
+if not 0.0 <= NOISE_W <= 2.0:
+    raise RuntimeError("SINHALA_TTS_NOISE_W must be between 0.0 and 2.0.")
+SYNTHESIS_CONFIG = SynthesisConfig(
+    length_scale=LENGTH_SCALE,
+    noise_scale=NOISE_SCALE,
+    noise_w=NOISE_W,
+)
 
 _voice: PiperVoice | None = None
 _voice_lock = threading.Lock()
@@ -128,6 +140,10 @@ async def lifespan(app: FastAPI):
         not ORT_DISABLE_CPU_MEM_ARENA,
         not ORT_DISABLE_MEM_PATTERN,
         LENGTH_SCALE,
+    )
+    logger.info(
+        "Sinhala voice clarity settings length_scale=%s noise_scale=%s noise_w=%s",
+        LENGTH_SCALE, NOISE_SCALE, NOISE_W,
     )
     yield
     _voice = None
