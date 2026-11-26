@@ -12,13 +12,16 @@ function getAvatar() {
   const doc = host.document;
   const wrap = doc.createElement('div');
   wrap.id = 'gov-avatar';
-  wrap.style.cssText = 'position:fixed;right:22px;bottom:22px;width:min(300px,70vw);z-index:99999;border-radius:20px;overflow:hidden;' +
-    'background:#0b1030;box-shadow:0 18px 50px rgba(0,0,0,.45);border:2px solid rgba(255,255,255,.4);display:none;opacity:0;' +
+  wrap.style.cssText = 'position:fixed;right:16px;bottom:86px;width:clamp(150px,26vw,245px);max-width:calc(100vw - 24px);z-index:99999;border-radius:18px;overflow:hidden;' +
+    'background:#0b1030;box-shadow:0 12px 32px rgba(0,0,0,.35);border:2px solid rgba(255,255,255,.4);display:none;opacity:0;' +
     'transform:translateY(24px) scale(.96);transition:opacity .3s ease,transform .3s ease;font-family:Inter,system-ui,sans-serif;';
   wrap.innerHTML = '<canvas width="720" height="720" style="width:100%;display:block"></canvas>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;color:#fff;font-size:12px;font-weight:600;background:rgba(0,0,0,.6)">' +
     '<span>🔊 Speaking…</span><button type="button" title="Stop" style="background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:999px;padding:3px 10px;cursor:pointer;font-size:12px">⏹ Stop</button></div>';
   doc.body.appendChild(wrap);
+  const responsive = doc.createElement('style');
+  responsive.textContent = '@media(max-width:600px){#gov-avatar{width:min(156px,38vw)!important;right:10px!important;bottom:82px!important;border-radius:14px!important}#gov-avatar>div{padding:5px 8px!important;font-size:10px!important}#gov-avatar button{padding:2px 7px!important;font-size:10px!important}}';
+  doc.head.appendChild(responsive);
 
   const canvas = wrap.querySelector('canvas');
   const ctx = canvas.getContext('2d');
@@ -211,8 +214,20 @@ TOOLS_JS = AVATAR_JS + r"""
   }
 
   function cleanForSpeech(t) {
-    return t.replace(/```[\s\S]*?```/g, ' ').replace(/https?:\/\/\S+/g, ' ')
-            .replace(/[#*_`>|~]/g, ' ').replace(/\s+/g, ' ').trim();
+    return (t || '')
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/<br\s*\/?\s*>/gi, ' ')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/&lt;br\s*\/?\s*&gt;/gi, ' ')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .replace(/^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/gm, ' ')
+      .replace(/^\s*[-*_]{3,}\s*$/gm, ' ')
+      .replace(/-{3,}/g, ' ')
+      .replace(/^\s*[-*+]\s+/gm, ' ')
+      .replace(/\|/g, ' ')
+      .replace(/[#*_`>|~]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   // Split into short pieces: Chrome silently stops long utterances after ~15 s.
