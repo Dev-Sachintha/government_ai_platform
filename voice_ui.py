@@ -181,7 +181,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       .word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}
       .letter.active{color:#fff;background:#6757d9;border-radius:3px}
       .hint{font-size:11px;opacity:.7;margin-top:5px}
-      @media(max-width:480px){.player{padding:7px}audio{height:34px}.reader{font-size:14px;line-height:1.7;padding:8px;max-height:115px}}
+      @media(max-width:480px){.player{padding:7px}audio{width:100%;height:40px}.reader{font-size:16px;line-height:1.9;padding:10px;max-height:180px;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;overflow-wrap:anywhere;word-break:normal}.word.active{background:#ffe082;color:#382600}.letter.active{color:#fff;background:#6757d9;border-radius:3px}}
     </style></head><body><div class="player">
       <audio id="audio" controls preload="metadata"></audio>
       <div class="reader" id="reader"></div>
@@ -203,15 +203,40 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
         letterParts.forEach(ch=>{const s=document.createElement('span');s.className='letter';s.textContent=ch;span.appendChild(s);});
         reader.appendChild(span);segments.push({span,start,end:start+value.length});
       }
+      let lastActiveWord=null, lastActiveLetter=null;
       function paint(){
         if(!Number.isFinite(audio.duration)||audio.duration<=0)return;
         const ratio=Math.min(0.999999,Math.max(0,audio.currentTime/audio.duration));
         const target=Math.floor(ratio*original.length);
         let active=null;
-        for(const item of segments){if(item.span){const yes=target>=item.start&&target<item.end;item.span.classList.toggle('active',yes);if(yes)active=item;}}
+        for(const item of segments){
+          if(item.span && target>=item.start && target<item.end){active=item;break;}
+        }
+        if(active!==lastActiveWord){
+          if(lastActiveWord)lastActiveWord.span.classList.remove('active');
+          if(active)active.span.classList.add('active');
+          lastActiveWord=active;
+        }
         if(active){
-          active.span.querySelectorAll('.letter').forEach((el,i)=>el.classList.toggle('active',i===Math.min(el.parentElement.children.length-1,Math.floor((target-active.start)/Math.max(1,active.end-active.start)*el.parentElement.children.length))));
-          active.span.scrollIntoView({block:'nearest',inline:'nearest'});
+          const letters=active.span.children;
+          const letterIndex=Math.min(letters.length-1,Math.floor((target-active.start)/Math.max(1,active.end-active.start)*letters.length));
+          const nextLetter=letters[letterIndex]||null;
+          if(nextLetter!==lastActiveLetter){
+            if(lastActiveLetter)lastActiveLetter.classList.remove('active');
+            if(nextLetter)nextLetter.classList.add('active');
+            lastActiveLetter=nextLetter;
+          }
+          // Keep scrolling inside the reader only when the active word changes.
+          const readerRect=reader.getBoundingClientRect();
+          const wordRect=active.span.getBoundingClientRect();
+          if(wordRect.top<readerRect.top){
+            reader.scrollTop-=readerRect.top-wordRect.top+8;
+          }else if(wordRect.bottom>readerRect.bottom){
+            reader.scrollTop+=wordRect.bottom-readerRect.bottom+8;
+          }
+        }else if(lastActiveLetter){
+          lastActiveLetter.classList.remove('active');
+          lastActiveLetter=null;
         }
       }
       let audioRaf=0;
