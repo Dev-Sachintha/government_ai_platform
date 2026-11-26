@@ -9,6 +9,7 @@ import html as _html
 import io
 import json
 import os
+import re
 import time
 import wave
 
@@ -17,6 +18,23 @@ import streamlit.components.v1 as components
 import llm
 
 from avatar_js import AVATAR_JS, STT_JS, TOOLS_JS
+
+def _clean_speech_text(text: str) -> str:
+    """Remove HTML/Markdown layout tokens that should never be spoken."""
+    value = _html.unescape(text or "")
+    value = re.sub(r"```[\\s\\S]*?```", " ", value)
+    value = re.sub(r"<br\\s*/?>", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"^\\s*\\|?\\s*:?-{3,}:?\\s*(?:\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*$", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"^\\s*[-*_]{3,}\\s*$", " ", value, flags=re.MULTILINE)
+    value = re.sub(r"-{3,}", " ", value)
+    value = re.sub(r"\\[([^\\]]+)\\]\\((?:https?://)?[^)]+\\)", r"\\1", value)
+    value = re.sub(r"https?://\\S+", " ", value)
+    value = re.sub(r"^\\s*[-*+]\\s+", " ", value, flags=re.MULTILINE)
+    value = value.replace("|", " ")
+    value = re.sub(r"[#*_~`>]", " ", value)
+    return re.sub(r"\\s+", " ", value).strip()
+
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -48,9 +66,9 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "padding:5px 13px;cursor:pointer;font-size:12px;color:#333}"
         ".gov-status{font-size:11px;opacity:.8}"
         ".gov-reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:12px;"
-        "background:#f8faff;color:#182033;font-size:16px;line-height:1.9;max-height:190px;overflow:auto;white-space:pre-wrap;}"
+        "background:#f8faff;color:#182033;font-size:16px;line-height:1.9;max-height:150px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;}"
         ".gov-word{border-radius:5px;padding:1px 2px;transition:background .12s,color .12s}"
-        ".gov-word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}"
+        ".gov-word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}"\n        "@media(max-width:480px){body{font-size:14px}.gov-reader{font-size:14px;line-height:1.75;padding:9px;max-height:130px}button{padding:5px 9px;font-size:12px}.gov-status{flex-basis:100%}}"
         ".gov-letter.active{color:#fff;background:#6757d9;border-radius:3px}"
         "</style></head><body>"
         f"<div id='speech-{int(msg_index)}' data-gov-tools data-text='{attr}' data-lang='{lang}' "
@@ -63,7 +81,7 @@ def _speech_frame(text: str, language: str, msg_index: int):
         "<div class='gov-reader' data-reader aria-live='off'></div>"
         "</div><script>" + TOOLS_JS + "</script></body></html>"
     )
-    components.html(page, height=260)
+    components.html(page, height=225)
 
 
 def _split_sinhala_tts_text(text: str, max_chars: int = 120) -> list[str]:
@@ -147,11 +165,11 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       .player{padding:10px;border:1px solid #d8deea;border-radius:14px;background:#f8faff}
       audio{width:100%;height:38px}
       .reader{margin-top:9px;padding:12px;border:1px solid #d8deea;border-radius:10px;
-        background:#fff;font-size:16px;line-height:2;max-height:190px;overflow:auto;white-space:pre-wrap}
+        background:#fff;font-size:15px;line-height:1.8;max-height:130px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
       .word{border-radius:5px;padding:1px 2px}
       .word.active{background:#ffe082;color:#382600;box-shadow:0 0 0 2px #ffe082}
       .letter.active{color:#fff;background:#6757d9;border-radius:3px}
-      .hint{font-size:11px;opacity:.7;margin-top:5px}
+      .hint{font-size:11px;opacity:.7;margin-top:5px}\n      @media(max-width:480px){.player{padding:7px}audio{height:34px}.reader{font-size:14px;line-height:1.7;padding:8px;max-height:115px}}
     </style></head><body><div class="player">
       <audio id="audio" controls preload="metadata"></audio>
       <div class="reader" id="reader"></div>
@@ -190,7 +208,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       audio.addEventListener('pause',()=>{if(!audio.ended)avatar.stop();});
       audio.addEventListener('ended',()=>{reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
     </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
-    components.html(page, height=300)
+    components.html(page, height=245)
 
 
 def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None):
@@ -203,7 +221,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
             key=f"voice_language_{msg_index}", label_visibility="collapsed",
         )
     lang_code = _TTS_LANGUAGES[language_name]
-    original = text or ""
+    original = _clean_speech_text(text or "")
     speech_text = original
     if lang_code != "auto":
         import hashlib
