@@ -22,6 +22,21 @@ The first deployment downloads the ONNX voice model from Hugging Face. The servi
 configured to use one Uvicorn worker and serial inference so the model is not loaded
 multiple times or used concurrently on a small instance.
 
+### Sinhala voice clarity
+
+The default synthesis profile is tuned slightly slower with reduced voice variation to
+make syllables easier to distinguish:
+
+- `SINHALA_TTS_LENGTH_SCALE=1.12` — slower speech (higher values are slower)
+- `SINHALA_TTS_NOISE_SCALE=0.55` — less random variation
+- `SINHALA_TTS_NOISE_W=0.65` — steadier phoneme duration variation
+
+These are synthesis tuning settings, not a model upgrade. If pronunciation remains
+unclear for particular Sinhala words, the limitation may be in the medium-quality
+Dilu model or its Sinhala phoneme mapping; parameter changes cannot correct every
+pronunciation. The values can be adjusted in Render environment variables and tested
+with the same short Sinhala sample before changing the whole service.
+
 ### Memory tuning
 
 The default configuration favors a smaller memory footprint:
