@@ -28,16 +28,13 @@ def _clean_speech_text(text: str) -> str:
     value = re.sub(r"\x60\x60\x60[\s\S]*?\x60\x60\x60", " ", value)
     value = re.sub(r"<br\s*/?\s*>", " ", value, flags=re.IGNORECASE)
     value = re.sub(r"<[^>]+>", " ", value)
-    # Markdown table separator rows and horizontal rules.
-    value = re.sub(
-        r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$",
-        " ", value, flags=re.MULTILINE,
-    )
-    value = re.sub(r"^\s*[-*_]{3,}\s*$", " ", value, flags=re.MULTILINE)
-    # Also remove repeated dash characters separated by spaces or using Unicode dashes.
-    value = re.sub(r"(?:\s*[-‐‑‒–—]\s*){2,}", " ", value)
-    # Remove standalone dash bullets even when they follow a sentence on the same line.
-    value = re.sub(r"(?<!\w)[-‐‑‒–—](?=\s*\w)", " ", value)
+    # Strip horizontal rules and dash-only separators so TTS never reads them as "minus".
+    dash_chars = "-‐‑‒–—―−﹣－"
+    dash_class = re.escape(dash_chars)
+    value = re.sub(rf"(?m)^\\s*[|_*{dash_class}]+\\s*$", " ", value)
+    value = re.sub(rf"(?:\\s*[{dash_class}]\\s*){{2,}}", " ", value)
+    # Remove single standalone separator dashes while preserving hyphenated words.
+    value = re.sub(rf"(?<!\\w)[{dash_class}](?=\\s*\\w)", " ", value)
     value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
     value = re.sub(r"https?://\S+", " ", value)
     value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
@@ -246,7 +243,11 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
         audioRaf=requestAnimationFrame(audioFrame);
       }
       audio.addEventListener('loadedmetadata',paint);
-      audio.addEventListener('play',()=>{avatar.start();if(!audioRaf)audioRaf=requestAnimationFrame(audioFrame);});
+      audio.addEventListener('durationchange',paint);
+      audio.addEventListener('loadeddata',paint);
+      audio.addEventListener('canplay',paint);
+      audio.addEventListener('playing',paint);
+      audio.addEventListener('play',()=>{avatar.start();paint();if(!audioRaf)audioRaf=requestAnimationFrame(audioFrame);});
       audio.addEventListener('timeupdate',paint);
       audio.addEventListener('seeked',paint);
       audio.addEventListener('pause',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}if(!audio.ended)avatar.stop();});
