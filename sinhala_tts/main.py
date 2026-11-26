@@ -92,62 +92,77 @@ class TTSRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TEXT_LENGTH)
 
 
+def _load_voice_model() -> None:
+    """Load Piper in a background thread so the HTTP port opens immediately."""
+    global _voice
+    try:
+        api_key = os.getenv("SINHALA_TTS_API_KEY", "").strip()
+        if len(api_key) < 32:
+            raise RuntimeError("SINHALA_TTS_API_KEY must be set to a secret of at least 32 characters.")
+        cache_dir = Path(os.getenv("HF_HOME", "/tmp/huggingface"))
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        model_path = hf_hub_download(
+            repo_id=MODEL_REPO,
+            filename=MODEL_FILE,
+            cache_dir=str(cache_dir),
+        )
+        config_path = hf_hub_download(
+            repo_id=MODEL_REPO,
+            filename=CONFIG_FILE,
+            cache_dir=str(cache_dir),
+        )
+        logger.info("Loading Sinhala voice model repo=%s model_file=%s", MODEL_REPO, MODEL_FILE)
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            voice_config = PiperConfig.from_dict(json.load(config_file))
+
+        session_options = ort.SessionOptions()
+        session_options.intra_op_num_threads = ORT_THREADS
+        session_options.inter_op_num_threads = ORT_INTER_OP_THREADS
+        session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        session_options.graph_optimization_level = _GRAPH_OPT_LEVELS[ORT_GRAPH_OPT_LEVEL]
+        session_options.enable_cpu_mem_arena = not ORT_DISABLE_CPU_MEM_ARENA
+        session_options.enable_mem_pattern = not ORT_DISABLE_MEM_PATTERN
+
+        _voice = PiperVoice(
+            config=voice_config,
+            session=ort.InferenceSession(
+                model_path,
+                sess_options=session_options,
+                providers=["CPUExecutionProvider"],
+            ),
+        )
+        logger.info(
+            "Sinhala voice model loaded rss_peak_mb=%s intra_threads=%s inter_threads=%s "
+            "graph_optimization=%s cpu_mem_arena=%s mem_pattern=%s length_scale=%s",
+            _memory_rss_mb(),
+            ORT_THREADS,
+            ORT_INTER_OP_THREADS,
+            ORT_GRAPH_OPT_LEVEL,
+            not ORT_DISABLE_CPU_MEM_ARENA,
+            not ORT_DISABLE_MEM_PATTERN,
+            LENGTH_SCALE,
+        )
+        logger.info(
+            "Sinhala voice clarity settings length_scale=%s noise_scale=%s noise_w=%s",
+            LENGTH_SCALE, NOISE_SCALE, NOISE_W,
+        )
+
+    except Exception:
+        logger.exception("Sinhala voice model failed to load; API will remain online but TTS returns 503.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _voice
-    api_key = os.getenv("SINHALA_TTS_API_KEY", "").strip()
-    if len(api_key) < 32:
-        raise RuntimeError("SINHALA_TTS_API_KEY must be set to a secret of at least 32 characters.")
-    cache_dir = Path(os.getenv("HF_HOME", "/tmp/huggingface"))
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    model_path = hf_hub_download(
-        repo_id=MODEL_REPO,
-        filename=MODEL_FILE,
-        cache_dir=str(cache_dir),
+    # Do not block Uvicorn's startup/port binding while downloading the model.
+    loader = threading.Thread(
+        target=_load_voice_model,
+        name="sinhala-tts-model-loader",
+        daemon=True,
     )
-    config_path = hf_hub_download(
-        repo_id=MODEL_REPO,
-        filename=CONFIG_FILE,
-        cache_dir=str(cache_dir),
-    )
-    logger.info("Loading Sinhala voice model repo=%s model_file=%s", MODEL_REPO, MODEL_FILE)
-    with open(config_path, "r", encoding="utf-8") as config_file:
-        voice_config = PiperConfig.from_dict(json.load(config_file))
-
-    session_options = ort.SessionOptions()
-    session_options.intra_op_num_threads = ORT_THREADS
-    session_options.inter_op_num_threads = ORT_INTER_OP_THREADS
-    session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    session_options.graph_optimization_level = _GRAPH_OPT_LEVELS[ORT_GRAPH_OPT_LEVEL]
-    session_options.enable_cpu_mem_arena = not ORT_DISABLE_CPU_MEM_ARENA
-    session_options.enable_mem_pattern = not ORT_DISABLE_MEM_PATTERN
-
-    _voice = PiperVoice(
-        config=voice_config,
-        session=ort.InferenceSession(
-            model_path,
-            sess_options=session_options,
-            providers=["CPUExecutionProvider"],
-        ),
-    )
-    logger.info(
-        "Sinhala voice model loaded rss_peak_mb=%s intra_threads=%s inter_threads=%s "
-        "graph_optimization=%s cpu_mem_arena=%s mem_pattern=%s length_scale=%s",
-        _memory_rss_mb(),
-        ORT_THREADS,
-        ORT_INTER_OP_THREADS,
-        ORT_GRAPH_OPT_LEVEL,
-        not ORT_DISABLE_CPU_MEM_ARENA,
-        not ORT_DISABLE_MEM_PATTERN,
-        LENGTH_SCALE,
-    )
-    logger.info(
-        "Sinhala voice clarity settings length_scale=%s noise_scale=%s noise_w=%s",
-        LENGTH_SCALE, NOISE_SCALE, NOISE_W,
-    )
+    loader.start()
     yield
+    global _voice
     _voice = None
-
 
 app = FastAPI(
     title="Government AI Platform — Sinhala TTS",
