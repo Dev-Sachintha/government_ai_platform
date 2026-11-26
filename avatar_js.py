@@ -280,6 +280,46 @@ TOOLS_JS = AVATAR_JS + r"""
     playNext();
   }
 
+  // Build a safe, grapheme-aware reading view. Speech boundary charIndex values
+  // are mapped back to the visible word and individual letters.
+  function prepareReader(root, spoken) {
+    const reader = root.querySelector('[data-reader]');
+    if (!reader) return null;
+    reader.textContent = '';
+    const nodes = [];
+    const re = /\\S+|\\s+/gu; let match;
+    while ((match = re.exec(spoken)) !== null) {
+      const value = match[0], start = match.index;
+      if (/^\\s+$/u.test(value)) { reader.appendChild(document.createTextNode(value)); continue; }
+      const word = document.createElement('span'); word.className = 'gov-word';
+      const chars = (typeof Intl !== 'undefined' && Intl.Segmenter)
+        ? Array.from(new Intl.Segmenter(undefined, {granularity:'grapheme'}).segment(value), x => x.segment)
+        : Array.from(value);
+      chars.forEach(function (ch) {
+        const letter = document.createElement('span'); letter.className = 'gov-letter';
+        letter.textContent = ch; word.appendChild(letter);
+      });
+      reader.appendChild(word); nodes.push({start:start,end:start+value.length,word:word});
+    }
+    return function (charIndex) {
+      let active = null;
+      nodes.forEach(function (item) {
+        const yes = charIndex >= item.start && charIndex < item.end;
+        item.word.classList.toggle('active', yes);
+        if (yes) active = item;
+      });
+      if (active) {
+        const letters = active.word.querySelectorAll('.gov-letter');
+        const offset = Math.max(0, charIndex - active.start);
+        let count = 0;
+        for (let i=0;i<offset;i++) if (!(/[\\uDC00-\\uDFFF]/.test(spoken.charAt(active.start+i)))) count++;
+        const index = Math.min(letters.length-1, count);
+        letters.forEach(function (el,i) { el.classList.toggle('active', i === index); });
+        active.word.scrollIntoView({block:'nearest',inline:'nearest'});
+      }
+    };
+  }
+
   function speak(root, text, requestedLanguage) {
     if (!('speechSynthesis' in SYN) || !('SpeechSynthesisUtterance' in SYN)) {
       setStatus(root, 'Speech is not supported by this browser. Use Chrome or Edge.');
@@ -292,6 +332,7 @@ TOOLS_JS = AVATAR_JS + r"""
     const language = requestedLanguage && requestedLanguage !== 'auto'
       ? requestedLanguage : detectLanguage(spoken);
     const pieces = chunkText(spoken);
+    const paintBoundary = prepareReader(root, spoken);
     const mySession = bump();
 
     try { SYN.speechSynthesis.cancel(); } catch (e) {}
@@ -313,6 +354,8 @@ TOOLS_JS = AVATAR_JS + r"""
       if (i >= pieces.length) {
         setStatus(root, '');
         if (avatar) avatar.stop();
+        const reader = root.querySelector('[data-reader]');
+        if (reader) reader.querySelectorAll('.active').forEach(function (el) { el.classList.remove('active'); });
         return;
       }
       const u = new SYN.SpeechSynthesisUtterance(pieces[i]);
@@ -325,7 +368,10 @@ TOOLS_JS = AVATAR_JS + r"""
           : 'Speaking (' + langName(language) + ')… this device has no ' + langName(language) +
             ' voice installed, so it may sound wrong or use a different accent.');
       };
-      u.onboundary = function () { if (avatar) avatar.pulse(); };
+      u.onboundary = function (ev) {
+        if (avatar) avatar.pulse();
+        if (paintBoundary && ev && Number.isFinite(ev.charIndex)) paintBoundary(ev.charIndex);
+      };
       u.onend = function () { next(i + 1, voice, hadVoice); };
       u.onerror = function (ev) {
         if (mySession !== cur()) return;
