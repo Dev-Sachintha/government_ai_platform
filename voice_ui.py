@@ -35,9 +35,13 @@ def _clean_speech_text(text: str) -> str:
     value = re.sub(rf"(?:\s*[{dash_class}]\s*){{2,}}", " ", value)
     # Remove standalone separators while preserving hyphenated words.
     value = re.sub(rf"(?<!\w)\s*[{dash_class}]\s*(?![{dash_class}])", " ", value)
-    value = re.sub(r"\s+", " ", value)
-    value = re.sub(r"[#*_~\x60>]", " ", value)
-    return re.sub(r"\s+", " ", value).strip()
+    # Remove Markdown emphasis markers explicitly (including runs like ** and ***),
+    # escaped Markdown punctuation, and remaining formatting characters before TTS.
+    value = re.sub(r"\\\\([\\\\`*_{}\\[\\]()#+.!|>~-])", r"\\1", value)
+    value = re.sub(r"(?<!\\w)(?:\\*{1,3}|_{1,3})(?=\\S)|(?<=\\S)(?:\\*{1,3}|_{1,3})(?!\\w)", " ", value)
+    value = re.sub(r"[\\#\\*\\_\\~\\x60\\>\\|]", " ", value)
+    value = re.sub(r"\\s+", " ", value)
+    return re.sub(r"\\s+", " ", value).strip()
 
 _BASE_CSS = """
 html, body { margin:0; padding:0; background:transparent; font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; color:#444; }
@@ -332,7 +336,7 @@ def render_message_tools(text: str, msg_index: int, llm_cfg: dict | None = None)
             import hashlib
             import requests
 
-            audio_key = "sinhala_tts_audio_" + hashlib.sha256(
+            audio_key = "sinhala_tts_audio_v2_" + hashlib.sha256(
                 speech_text.encode("utf-8")
             ).hexdigest()[:24]
             service_url = str(
