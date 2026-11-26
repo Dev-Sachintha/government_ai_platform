@@ -66,7 +66,7 @@ if not 0.0 <= NOISE_W <= 2.0:
 SYNTHESIS_CONFIG = SynthesisConfig(
     length_scale=LENGTH_SCALE,
     noise_scale=NOISE_SCALE,
-    noise_w=NOISE_W,
+    noise_w_scale=NOISE_W,
 )
 
 _voice: PiperVoice | None = None
