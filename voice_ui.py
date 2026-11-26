@@ -31,14 +31,11 @@ def _clean_speech_text(text: str) -> str:
     # Strip horizontal rules and dash-only separators so TTS never reads them as "minus".
     dash_chars = "-‐‑‒–—―−﹣－"
     dash_class = re.escape(dash_chars)
-    value = re.sub(rf"(?m)^\\s*[|_*{dash_class}]+\\s*$", " ", value)
-    value = re.sub(rf"(?:\\s*[{dash_class}]\\s*){{2,}}", " ", value)
-    # Remove single standalone separator dashes while preserving hyphenated words.
-    value = re.sub(rf"(?<!\\w)[{dash_class}](?=\\s*\\w)", " ", value)
-    value = re.sub(r"\[([^\]]+)\]\((?:https?://)?[^)]+\)", r"\1", value)
-    value = re.sub(r"https?://\S+", " ", value)
-    value = re.sub(r"^\s*[-*+]\s+", " ", value, flags=re.MULTILINE)
-    value = value.replace("|", " ")
+    value = re.sub(rf"(?m)^\s*[|_*{dash_class}]+\s*$", " ", value)
+    value = re.sub(rf"(?:\s*[{dash_class}]\s*){{2,}}", " ", value)
+    # Remove standalone separators while preserving hyphenated words.
+    value = re.sub(rf"(?<!\w)\s*[{dash_class}]\s*(?![{dash_class}])", " ", value)
+    value = re.sub(r"\s+", " ", value)
     value = re.sub(r"[#*_~\x60>]", " ", value)
     return re.sub(r"\s+", " ", value).strip()
 
@@ -166,6 +163,10 @@ def _combine_sinhala_wav_parts(audio_parts: list[bytes]) -> bytes:
 def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
     """Play server-generated Sinhala WAV with approximate word/letter karaoke highlighting."""
     audio_uri = "data:audio/wav;base64," + base64.b64encode(audio_bytes).decode("ascii")
+    # Use WAV header duration if a mobile WebView reports an invalid media duration.
+    with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
+        known_duration = wav_file.getnframes() / float(wav_file.getframerate())
+    duration_json = json.dumps(known_duration)
     text_json = json.dumps(text or "", ensure_ascii=False).replace("</", "<\\/")
     audio_json = json.dumps(audio_uri)
     page = """<!doctype html><html><head><meta charset="utf-8"><style>
@@ -184,7 +185,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       <div class="reader" id="reader"></div>
       <div class="hint">Sinhala word highlighting is synchronized approximately with audio progress.</div>
     </div><script>__AVATAR_SCRIPT__</script><script>
-      const source=__AUDIO__, original=__TEXT__;
+      const source=__AUDIO__, original=__TEXT__, knownDuration=__DURATION__;
       const avatar=getAvatar();
       const audio=document.getElementById('audio'), reader=document.getElementById('reader');
       audio.src=source;
@@ -202,8 +203,9 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       }
       let lastActiveWord=null, lastActiveLetter=null;
       function paint(){
-        if(!Number.isFinite(audio.duration)||audio.duration<=0)return;
-        const ratio=Math.min(0.999999,Math.max(0,audio.currentTime/audio.duration));
+        const duration=(Number.isFinite(audio.duration)&&audio.duration>0)?audio.duration:knownDuration;
+        if(!Number.isFinite(duration)||duration<=0)return;
+        const ratio=Math.min(0.999999,Math.max(0,audio.currentTime/duration));
         const target=Math.floor(ratio*original.length);
         let active=null;
         for(const item of segments){
@@ -252,7 +254,7 @@ def _sinhala_audio_frame(audio_bytes: bytes, text: str, msg_index: int):
       audio.addEventListener('seeked',paint);
       audio.addEventListener('pause',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}if(!audio.ended)avatar.stop();});
       audio.addEventListener('ended',()=>{if(audioRaf){cancelAnimationFrame(audioRaf);audioRaf=0;}reader.querySelectorAll('.active').forEach(x=>x.classList.remove('active'));avatar.stop();});
-    </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json)
+    </script></body></html>""".replace("__AVATAR_SCRIPT__", AVATAR_JS).replace("__AUDIO__", audio_json).replace("__TEXT__", text_json).replace("__DURATION__", duration_json)
     components.html(page, height=245)
 
 
