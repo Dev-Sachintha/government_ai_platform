@@ -1221,6 +1221,23 @@ def main():
 
     user_role = st.session_state.get("role", "user")
     username = st.session_state.get("current_user", "User")
+    # Revalidate authorization on every app rerun so disabled accounts lose access promptly.
+    auth_conn = sqlite3.connect(db_path)
+    try:
+        auth_row = auth_conn.execute(
+            "SELECT role, active FROM app_users WHERE username = ? COLLATE NOCASE LIMIT 1",
+            (username,),
+        ).fetchone()
+    finally:
+        auth_conn.close()
+    if not auth_row or not auth_row[1] or auth_row[0] != user_role:
+        log_event(db_path, username, "ACCOUNT_SESSION_REVOKED", "inactive or role changed")
+        remove_user_presence(db_path, st.session_state.get("analytics_session_id", ""))
+        st.session_state["authenticated"] = False
+        st.session_state.pop("role", None)
+        st.session_state.pop("current_user", None)
+        st.error("Your account is disabled or its permissions changed. Please log in again.")
+        st.rerun()
     if "analytics_session_id" not in st.session_state:
         st.session_state["analytics_session_id"] = secrets.token_urlsafe(18)
     _presence_id = st.session_state["analytics_session_id"]
