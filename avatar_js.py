@@ -64,8 +64,8 @@ function getAvatar() {
   // Coordinates are in the 720x720 avatar image space.
   // Correct coordinates for the central face in static/avatar.jpg (720x720).
   // Eye line is around y=432; cheek areas sit beside the moustache around y=500.
-  const EYES = [{x:275,y:424,w:48,h:21},{x:397,y:424,w:48,h:21}];
-  const CHEEKS = [{x:266,y:500},{x:454,y:500}];
+  const EYES = [{x:273,y:409,w:58,h:34},{x:397,y:409,w:58,h:34}];
+  const CHEEKS = [{x:264,y:518},{x:458,y:518}];
   function draw(m) {
     if (!ready) return;
     ctx.drawImage(img, 0, 0);
@@ -94,9 +94,10 @@ function getAvatar() {
       EYES.forEach(function (eye) {
         const lidHeight = eye.h * lid;
         ctx.save();
-        ctx.fillStyle = 'rgba(174,130,102,' + Math.min(0.96, lid) + ')';
+        // Fully opaque lid cover so the blink remains visible on the detailed photo.
+        ctx.fillStyle = 'rgba(183,139,111,' + Math.min(1, lid) + ')';
         ctx.beginPath();
-        ctx.ellipse(eye.x + eye.w / 2, eye.y + eye.h / 2, eye.w / 2 + 1, Math.max(1, lidHeight * 1.25), 0, 0, Math.PI * 2);
+        ctx.ellipse(eye.x + eye.w / 2, eye.y + eye.h / 2, eye.w / 2 + 2, Math.max(1, lidHeight * 1.35), 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.strokeStyle = 'rgba(75,42,35,' + Math.min(0.75, lid) + ')';
         ctx.lineWidth = 3;
@@ -110,12 +111,12 @@ function getAvatar() {
 
     // Cheeks softly lift while speaking; keep the effect low-opacity and brief.
     if (m > 0.03) {
-      const cheekAlpha = Math.min(0.10, 0.025 + m * 0.075);
-      const lift = Math.sin(t / 170) * m * 3;
+      const cheekAlpha = Math.min(0.30, 0.12 + m * 0.18);
+      const lift = Math.sin(t / 170) * m * 5;
       CHEEKS.forEach(function (cheek) {
         ctx.fillStyle = 'rgba(235,112,126,' + cheekAlpha + ')';
         ctx.beginPath();
-        ctx.ellipse(cheek.x, cheek.y - lift, 28 + m * 2, 15 + m, 0, 0, Math.PI * 2);
+        ctx.ellipse(cheek.x, cheek.y - lift, 34 + m * 3, 20 + m * 2, 0, 0, Math.PI * 2);
         ctx.fill();
       });
     }
