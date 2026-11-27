@@ -62,6 +62,11 @@ def ensure_security_table(db_path):
             conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email TEXT NOT NULL DEFAULT ''")
         if "recovery_email_verified" not in columns:
             conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email_verified INTEGER NOT NULL DEFAULT 0")
+        # Remove legacy phone-factor data after SMS/voice authentication was retired.
+        if "phone_number" in columns:
+            conn.execute("UPDATE staff_security SET phone_number=''")
+        if "phone_verified" in columns:
+            conn.execute("UPDATE staff_security SET phone_verified=0")
 
 
 def totp_is_enabled(db_path, username):
