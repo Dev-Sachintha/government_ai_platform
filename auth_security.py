@@ -62,10 +62,6 @@ def ensure_security_table(db_path):
             conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email TEXT NOT NULL DEFAULT ''")
         if "recovery_email_verified" not in columns:
             conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email_verified INTEGER NOT NULL DEFAULT 0")
-        if "phone_number" not in columns:
-            conn.execute("ALTER TABLE staff_security ADD COLUMN phone_number TEXT NOT NULL DEFAULT ''")
-        if "phone_verified" not in columns:
-            conn.execute("ALTER TABLE staff_security ADD COLUMN phone_verified INTEGER NOT NULL DEFAULT 0")
 
 
 def totp_is_enabled(db_path, username):
@@ -417,85 +413,6 @@ def send_smtp_test_email(email):
     )
     return _send_configured_smtp_message(message)
 
-
-# --- SMS / voice-call second factor (Twilio Verify) and one-time backup codes ---
-def _twilio_settings():
-    return (
-        _setting("TWILIO_ACCOUNT_SID").strip(),
-        _setting("TWILIO_AUTH_TOKEN").strip(),
-        _setting("TWILIO_VERIFY_SERVICE_SID").strip(),
-    )
-
-
-def phone_factor_enabled(db_path, username):
-    ensure_security_table(db_path)
-    with sqlite3.connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT phone_number, phone_verified FROM staff_security WHERE username=? COLLATE NOCASE",
-            (username,),
-        ).fetchone()
-    return bool(row and row[0] and row[1])
-
-
-def send_phone_verification(phone_number, channel="sms"):
-    """Send a Twilio Verify code by SMS or automated voice call."""
-    import requests
-    sid, token, service = _twilio_settings()
-    if not all((sid, token, service)):
-        return False, "SMS/Voice verification is not configured. Add Twilio Verify secrets."
-    if channel not in ("sms", "call"):
-        return False, "Unsupported verification channel."
-    try:
-        response = requests.post(
-            f"https://verify.twilio.com/v2/Services/{service}/Verifications",
-            auth=(sid, token),
-            data={"To": str(phone_number).strip(), "Channel": channel},
-            timeout=15,
-        )
-        if response.status_code not in (200, 201):
-            return False, "The phone verification provider could not send a code. Check the phone number and Twilio Verify settings."
-        return True, "Verification code sent."
-    except requests.RequestException:
-        return False, "Could not reach the phone verification provider. Try again."
-
-
-def verify_phone_code(phone_number, code):
-    """Check a Twilio Verify OTP without logging the phone number or code."""
-    import requests
-    sid, token, service = _twilio_settings()
-    if not all((sid, token, service)):
-        return False
-    value = str(code).strip()
-    if not value.isdigit() or not (4 <= len(value) <= 10):
-        return False
-    try:
-        response = requests.post(
-            f"https://verify.twilio.com/v2/Services/{service}/VerificationCheck",
-            auth=(sid, token),
-            data={"To": str(phone_number).strip(), "Code": value},
-            timeout=15,
-        )
-        return response.status_code == 200 and response.json().get("status") == "approved"
-    except (requests.RequestException, ValueError):
-        return False
-
-
-def set_verified_phone(db_path, username, phone_number):
-    ensure_security_table(db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE staff_security SET phone_number=?, phone_verified=1, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE AND enabled=1",
-            (str(phone_number).strip(), username),
-        )
-
-
-def remove_verified_phone(db_path, username):
-    ensure_security_table(db_path)
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE staff_security SET phone_number='', phone_verified=0, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE",
-            (username,),
-        )
 
 
 def consume_backup_code(db_path, username, code):
