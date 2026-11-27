@@ -1812,7 +1812,7 @@ def _show_product_tour(db_path, username, role):
         "background:#5146d8;color:white;font-weight:600;cursor:pointer'>🔊 Replay Ravana's explanation</button>"
         "<span id='tourVoiceStatus' style='margin-left:9px;font:12px Arial,sans-serif'></span>"
         "<div id='tourRavana' style='display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 18px;width:fit-content;max-width:100%;border-radius:55px;background:radial-gradient(circle at 25% 50%,#fff 0 28%,transparent 29%),radial-gradient(circle at 42% 35%,#fff 0 34%,transparent 35%),radial-gradient(circle at 68% 38%,#fff 0 34%,transparent 35%),radial-gradient(circle at 82% 55%,#fff 0 25%,transparent 26%),linear-gradient(180deg,#fff,#eaf3ff);box-shadow:0 8px 22px rgba(50,70,130,.18);animation:tourCloudFloat 3.4s ease-in-out infinite;position:relative;z-index:5'>"
-        "<img id='tourRavanaFace' alt='Ravana avatar' style='width:82px;height:82px;object-fit:cover;object-position:center;border-radius:50%;border:4px solid white;box-shadow:0 4px 14px #7894b966'/>"
+        "<canvas id='tourRavanaFace' width='720' height='720' role='img' aria-label='Animated Ravana avatar' style='width:94px;height:94px;object-fit:cover;border-radius:50%;border:4px solid white;box-shadow:0 4px 14px #7894b966;background:#fff'></canvas>"
         "<div style='font:700 13px Arial;color:#24324b;min-width:105px'><div>☁️ Ravana</div><div id='tourRavanaState' style='font-size:11px;color:#5265dc;margin-top:5px'>Ready to guide you</div></div></div>"
         "<style>@keyframes tourCloudFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}@keyframes tourTalk{0%,100%{transform:scale(1)}50%{transform:scale(1.055)}}#tourRavana.talking #tourRavanaFace{animation:tourTalk .28s ease-in-out infinite alternate}#tourRavana.talking{box-shadow:0 8px 26px rgba(79,70,229,.28)}</style>"
         "<script>" + r"""
@@ -1836,27 +1836,69 @@ def _show_product_tour(db_path, username, role):
               P.__govSession=(P.__govSession||0)+1;
               const avatarPanel=document.getElementById('tourRavana');
               const avatarState=document.getElementById('tourRavanaState');
-              const avatarFace=document.getElementById('tourRavanaFace');
-              if(avatarFace){
-                // HTMLImageElement.src is truthy even before an image is assigned
-                // (it resolves to the current document URL). Set the real source
-                // explicitly and fall back to Streamlit's static route if needed.
-                const avatarSources=[
-                  'https://raw.githubusercontent.com/Dev-Sachintha/government_ai_platform/main/static/avatar.jpg',
-                  P.location.origin + '/app/static/avatar.jpg'
-                ];
-                let avatarSourceIndex=0;
-                avatarFace.onerror=function(){
-                  avatarSourceIndex++;
-                  if(avatarSourceIndex<avatarSources.length) avatarFace.setAttribute('src',avatarSources[avatarSourceIndex]);
-                  else { avatarFace.style.display='none'; if(avatarState) avatarState.textContent='Ravana image could not load'; }
-                };
-                avatarFace.setAttribute('src',avatarSources[0]);
+              const avatarCanvas=document.getElementById('tourRavanaFace');
+              const avatarCtx=avatarCanvas ? avatarCanvas.getContext('2d') : null;
+              const avatarImage=new Image();
+              let avatarReady=false, avatarSpeaking=false, avatarMouth=0, avatarRaf=0, avatarLastPulse=0;
+              const avatarSources=[
+                'https://raw.githubusercontent.com/Dev-Sachintha/government_ai_platform/main/static/avatar.jpg',
+                P.location.origin + '/app/static/avatar.jpg'
+              ];
+              let avatarSourceIndex=0;
+              avatarImage.onload=function(){avatarReady=true;};
+              avatarImage.onerror=function(){
+                avatarSourceIndex++;
+                if(avatarSourceIndex<avatarSources.length) avatarImage.src=avatarSources[avatarSourceIndex];
+                else if(avatarState) avatarState.textContent='Ravana image could not load';
+              };
+              avatarImage.src=avatarSources[0];
+              function drawRavanaFrame(now){
+                if(!avatarCtx || !avatarReady)return;
+                avatarCtx.clearRect(0,0,720,720);
+                avatarCtx.drawImage(avatarImage,0,0,720,720);
+                const blinkCycle=(now%5000)/5000;
+                const blink=Math.max(0,1-Math.abs(blinkCycle-0.78)/0.035);
+                if(blink>0.02){
+                  [{x:273,y:409,w:58,h:34},{x:397,y:409,w:58,h:34}].forEach(function(eye){
+                    avatarCtx.fillStyle='rgba(183,139,111,'+Math.min(1,blink)+')';
+                    avatarCtx.beginPath();
+                    avatarCtx.ellipse(eye.x+eye.w/2,eye.y+eye.h/2,eye.w/2+2,Math.max(1,eye.h*blink*1.25),0,0,Math.PI*2);
+                    avatarCtx.fill();
+                    avatarCtx.strokeStyle='rgba(75,42,35,'+Math.min(.75,blink)+')';
+                    avatarCtx.lineWidth=3;
+                    avatarCtx.beginPath();avatarCtx.moveTo(eye.x,eye.y+eye.h/2);
+                    avatarCtx.quadraticCurveTo(eye.x+eye.w/2,eye.y+eye.h/2+eye.h*blink*.5,eye.x+eye.w,eye.y+eye.h/2);avatarCtx.stroke();
+                  });
+                }
+                const target=avatarSpeaking ? (.25+.55*Math.abs(Math.sin(now/95))) : 0;
+                avatarMouth+=(target-avatarMouth)*.34;
+                if(avatarMouth>.035){
+                  const dy=30*avatarMouth;
+                  avatarCtx.fillStyle='rgb(34,8,10)';
+                  avatarCtx.beginPath();avatarCtx.ellipse(354,541+(dy-2)/2,27,(dy+12)/2,0,0,Math.PI*2);avatarCtx.fill();
+                  if(avatarMouth>.35){avatarCtx.fillStyle='rgb(222,210,190)';avatarCtx.fillRect(337,539,34,6);}
+                  avatarCtx.fillStyle='rgb(120,40,48)';
+                  avatarCtx.beginPath();avatarCtx.ellipse(354,541+dy-5,13,6,0,0,Math.PI*2);avatarCtx.fill();
+                }
+                if(avatarSpeaking || avatarMouth>.035 || blink>0) avatarRaf=P.requestAnimationFrame(drawRavanaFrame);
+                else avatarRaf=0;
+              }
+              function startRavanaAnimation(){
+                avatarSpeaking=true;
+                if(avatarPanel)avatarPanel.classList.add('talking');
+                if(avatarState)avatarState.textContent='Speaking English…';
+                if(!avatarRaf)avatarRaf=P.requestAnimationFrame(drawRavanaFrame);
+              }
+              function stopRavanaAnimation(){
+                avatarSpeaking=false;
+                if(avatarPanel)avatarPanel.classList.remove('talking');
+                if(avatarState)avatarState.textContent='Ready to guide you';
+                if(!avatarRaf)avatarRaf=P.requestAnimationFrame(drawRavanaFrame);
               }
               const avatar={
-                start:function(){if(avatarPanel)avatarPanel.classList.add('talking');if(avatarState)avatarState.textContent='Speaking English…';},
-                pulse:function(){if(avatarPanel){avatarPanel.classList.add('talking');}},
-                stop:function(){if(avatarPanel)avatarPanel.classList.remove('talking');if(avatarState)avatarState.textContent='Ready to guide you';}
+                start:startRavanaAnimation,
+                pulse:function(){avatarLastPulse=P.performance.now();startRavanaAnimation();},
+                stop:stopRavanaAnimation
               };
               avatar.start();
               const utterance=new P.SpeechSynthesisUtterance(text);
