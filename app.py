@@ -16,7 +16,6 @@ import html
 import streamlit as st
 import persist
 import auth_security
-import phone_2fa
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
