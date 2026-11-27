@@ -752,24 +752,26 @@ def client_activity_and_shortcuts():
 
 
 LOGIN_RATE_WINDOW_SECONDS = 15 * 60
-LOGIN_RATE_BLOCK_SECONDS = 15 * 60
-LOGIN_RATE_MAX_FAILURES = 8
+LOGIN_RATE_BLOCK_SECONDS = 30 * 60
+LOGIN_RATE_MAX_FAILURES = 5
 
 
 def _login_guard_key(username: str) -> tuple[str, str]:
-    """Use the reverse-proxy client IP when available; otherwise fall back to username."""
+    """Use the connection's client IP when exposed; otherwise fall back to username."""
     try:
-        headers = st.context.headers
-        forwarded = str(headers.get("X-Forwarded-For", "")).split(",")[0].strip()
-        candidate = forwarded or str(headers.get("X-Real-IP", "")).strip()
-        if candidate and candidate.lower() not in ("unknown", "none"):
-            import ipaddress
-            candidate = str(ipaddress.ip_address(candidate))
-            return hashlib.sha256(("ip:" + candidate).encode("utf-8")).hexdigest(), "ip"
+        import ipaddress
+        # Prefer Streamlit's connection metadata over forwarded headers.
+        candidate = getattr(st.context, "ip_address", None)
+        if not candidate:
+            headers = st.context.headers
+            forwarded = str(headers.get("X-Forwarded-For", "")).split(",")[0].strip()
+            candidate = forwarded or str(headers.get("X-Real-IP", "")).strip()
+        if candidate and str(candidate).lower() not in ("unknown", "none"):
+            normalized_ip = str(ipaddress.ip_address(str(candidate).strip()))
+            return hashlib.sha256(("ip:" + normalized_ip).encode("utf-8")).hexdigest(), "ip"
     except Exception:
         pass
-    # Some hosting/proxy setups do not expose the client IP to Streamlit.
-    # In that case rate-limit the account name rather than grouping all visitors together.
+    # Avoid treating every visitor as one shared IP when a proxy hides client metadata.
     normalized = (username or "?").strip().casefold()[:100]
     return hashlib.sha256(("user:" + normalized).encode("utf-8")).hexdigest(), "username"
 
@@ -884,7 +886,7 @@ def check_password():
             st.session_state["auth_error"] = True
             if newly_blocked:
                 st.session_state["auth_error_message"] = (
-                    f"Too many failed attempts ({count}). This {key_type} is blocked for 15 minutes."
+                    f"Too many failed attempts ({count}). This {key_type} is blocked for 30 minutes."
                 )
                 log_event("database.db", user or "?", "LOGIN_IP_BLOCKED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
             else:
@@ -1334,7 +1336,7 @@ def render_admin_dashboard(db_path: str):
                 st.success("Temporary block released.")
                 st.rerun()
         con.close()
-        st.caption("Automatic protection: 8 failed attempts within 15 minutes trigger a 15-minute temporary block. IP addresses are hashed before storage; if the hosting proxy does not expose an IP, protection falls back to the username.")
+        st.caption("Automatic protection: 5 failed attempts within 15 minutes trigger a 30-minute temporary block. IP addresses are hashed before storage; if the hosting proxy does not expose an IP, protection falls back to the username.")
     live()
 
 
