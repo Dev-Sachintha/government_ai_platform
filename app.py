@@ -1428,7 +1428,7 @@ def render_admin_dashboard(db_path: str):
         else: st.info("No usage events recorded yet.")
         st.subheader("Currently online"); st.dataframe(online,use_container_width=True,hide_index=True)
         con=sqlite3.connect(db_path)
-        security=pd.read_sql_query("SELECT timestamp,username,action,details FROM audit_logs WHERE action IN ('LOGIN_FAILED','LOGIN_BLOCKED','LOGIN_IP_BLOCKED','BLOCKED_SQL','BLOCKED_ADMIN_DASHBOARD','USER_DISABLED') ORDER BY id DESC LIMIT 100",con)
+        security=pd.read_sql_query("SELECT timestamp,username,action,details FROM audit_logs WHERE action IN ('LOGIN_FAILED','LOGIN_BLOCKED','LOGIN_IP_BLOCKED','STAFF_2FA_FAILED','SUSPICIOUS_LOGIN_NEW_IP','BLOCKED_SQL','BLOCKED_ADMIN_DASHBOARD','USER_DISABLED') ORDER BY id DESC LIMIT 100",con)
         try:
             blocked_ips=pd.read_sql_query(
                 "SELECT guard_key, key_type, failures, blocked_until, last_attempt FROM login_guard WHERE blocked_until > ? ORDER BY blocked_until DESC",
