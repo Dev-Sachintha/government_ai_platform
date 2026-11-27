@@ -200,7 +200,7 @@ def generate_recovery_codes(db_path, username, count=10):
     """Replace a staff member's previous recovery codes and return new plaintext codes once."""
     import secrets
     ensure_recovery_table(db_path)
-    codes = [secrets.token_hex(8).upper() for _ in range(count)]
+    codes = [secrets.token_hex(16).upper() for _ in range(count)]
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM staff_recovery_codes WHERE username=? COLLATE NOCASE", (username,))
         conn.executemany(
