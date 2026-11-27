@@ -1837,7 +1837,22 @@ def _show_product_tour(db_path, username, role):
               const avatarPanel=document.getElementById('tourRavana');
               const avatarState=document.getElementById('tourRavanaState');
               const avatarFace=document.getElementById('tourRavanaFace');
-              if(avatarFace && !avatarFace.src) avatarFace.src=P.location.origin + '/app/static/avatar.jpg';
+              if(avatarFace){
+                // HTMLImageElement.src is truthy even before an image is assigned
+                // (it resolves to the current document URL). Set the real source
+                // explicitly and fall back to Streamlit's static route if needed.
+                const avatarSources=[
+                  'https://raw.githubusercontent.com/Dev-Sachintha/government_ai_platform/main/static/avatar.jpg',
+                  P.location.origin + '/app/static/avatar.jpg'
+                ];
+                let avatarSourceIndex=0;
+                avatarFace.onerror=function(){
+                  avatarSourceIndex++;
+                  if(avatarSourceIndex<avatarSources.length) avatarFace.setAttribute('src',avatarSources[avatarSourceIndex]);
+                  else { avatarFace.style.display='none'; if(avatarState) avatarState.textContent='Ravana image could not load'; }
+                };
+                avatarFace.setAttribute('src',avatarSources[0]);
+              }
               const avatar={
                 start:function(){if(avatarPanel)avatarPanel.classList.add('talking');if(avatarState)avatarState.textContent='Speaking English…';},
                 pulse:function(){if(avatarPanel){avatarPanel.classList.add('talking');}},
