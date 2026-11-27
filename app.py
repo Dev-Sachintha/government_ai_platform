@@ -1221,6 +1221,9 @@ def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
         username = st.session_state.get("current_user", "User")
         render_sidebar_threads(db_path, username)
+        if st.button("🧭 Take a Tour", use_container_width=True, key="sidebar_take_product_tour"):
+            st.session_state["product_tour_step"] = 0
+            st.session_state["show_product_tour"] = True
         # Every account is required to enroll in 2FA. All roles must be able to
         # view their one-time recovery codes and manage their verified recovery email.
         _show_staff_recovery_codes()
@@ -1670,6 +1673,85 @@ def render_admin_dashboard(db_path: str):
     live()
 
 
+
+def _tour_status(db_path, username):
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS app_tour_status (
+            username TEXT PRIMARY KEY COLLATE NOCASE,
+            completed INTEGER NOT NULL DEFAULT 0,
+            completed_at REAL
+        )""")
+        row = conn.execute("SELECT completed FROM app_tour_status WHERE username=? COLLATE NOCASE", (username,)).fetchone()
+        conn.commit()
+        return bool(row and row[0])
+    finally:
+        conn.close()
+
+
+def _finish_tour(db_path, username):
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS app_tour_status (
+            username TEXT PRIMARY KEY COLLATE NOCASE,
+            completed INTEGER NOT NULL DEFAULT 0,
+            completed_at REAL
+        )""")
+        conn.execute("""INSERT INTO app_tour_status(username,completed,completed_at)
+            VALUES(?,1,?) ON CONFLICT(username) DO UPDATE SET
+            completed=1,completed_at=excluded.completed_at""", (username,time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+@st.dialog("👋 Government AI Platform — Quick Tour", width="large")
+def _show_product_tour(db_path, username, role):
+    staff = role in ("admin", "analyst")
+    steps = [
+        ("Welcome to your AI Workspace", "This guided tour introduces the main areas. Use Next and Back, or Skip Tour at any time."),
+        ("💬 AI Workspace & Chat", "Ask questions and work with the AI assistant. Your chat history is available in the sidebar."),
+        ("📷 Scan", "Open Scan to use the available camera, upload, scanning and AI tools."),
+        ("🖐️ HoloMotion 3D", "Open HoloMotion 3D to explore gesture and 3D interaction features"),
+    ]
+    if staff:
+        steps += [
+            ("🗂️ Staff tools", "Website Sources, Image & PDF Library, Database Workbench and User Management are additional tools. Access depends on your role."),
+            ("🖥️ Monitoring", "Screen Monitor, Mobile Phone Monitor and PC System Monitoring provide monitoring tools available to staff roles"),
+        ]
+    steps.append(("🔐 Account security & help", "2FA is required for your account. Keep recovery codes safe. Reopen this tour anytime from the sidebar with Take a Tour."))
+    idx = max(0, min(int(st.session_state.get("product_tour_step", 0)), len(steps)-1))
+    title, description = steps[idx]
+    st.caption(f"Step {idx+1} of {len(steps)}")
+    st.progress((idx+1)/len(steps))
+    st.subheader(title)
+    st.write(description)
+    st.divider()
+    a,b,c=st.columns(3)
+    with a:
+        if st.button("← Back", disabled=idx==0, use_container_width=True, key="tour_back"):
+            st.session_state["product_tour_step"]=idx-1
+            st.rerun()
+    with b:
+        if st.button("Skip Tour", use_container_width=True, key="tour_skip"):
+            _finish_tour(db_path,username)
+            st.session_state["show_product_tour"]=False
+            st.session_state.pop("product_tour_step",None)
+            save_now()
+            st.rerun()
+    with c:
+        label="Finish ✓" if idx==len(steps)-1 else "Next →"
+        if st.button(label, type="primary", use_container_width=True, key="tour_next"):
+            if idx==len(steps)-1:
+                _finish_tour(db_path,username)
+                st.session_state["show_product_tour"]=False
+                st.session_state.pop("product_tour_step",None)
+                save_now()
+            else:
+                st.session_state["product_tour_step"]=idx+1
+            st.rerun()
+
+
 def main():
     st.set_page_config(
         page_title="Government AI Workspace", page_icon="💬", layout="wide"
@@ -1756,6 +1838,11 @@ def main():
     client_activity_and_shortcuts()
 
     render_sidebar_controls(db_path, user_role)
+    if not _tour_status(db_path, username) and "show_product_tour" not in st.session_state:
+        st.session_state["show_product_tour"] = True
+        st.session_state["product_tour_step"] = 0
+    if st.session_state.get("show_product_tour"):
+        _show_product_tour(db_path, username, user_role)
 
     fallback_keys = [
         "LLM_PROVIDER",
