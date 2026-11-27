@@ -937,18 +937,25 @@ def _render_staff_alternative_login():
     email = st.text_input("Verified recovery email", key="alternative_login_email").strip().lower()
     method = st.radio("Verification method", ["Authenticator app (6-digit code)", "Recovery email (one-time code)"], key="alternative_login_method")
     if method.startswith("Authenticator"):
+        st.caption("Authenticator codes refresh every 30 seconds and can be used only once. If you just used a code during setup or recovery, wait for the next code.")
         with st.form("alternative_totp_login_form"):
             code = st.text_input("6-digit Authenticator code", max_chars=6, placeholder="000000")
             submitted = st.form_submit_button("Verify and sign in", type="primary")
         if submitted:
             username, role = auth_security.get_staff_by_recovery_email("database.db", email)
-            valid = bool(username and len(code.strip()) == 6 and code.strip().isdigit() and auth_security.verify_totp("database.db", username, code.strip()))
-            if valid:
+            status = (
+                auth_security.verify_totp_detailed("database.db", username, code.strip())
+                if username and len(code.strip()) == 6 and code.strip().isdigit()
+                else "invalid"
+            )
+            if status == "valid":
                 _finish_staff_login(username, role)
                 log_event("database.db", username, "LOGIN_RECOVERY_EMAIL_TOTP", "Signed in using verified recovery email and authenticator code.")
                 st.rerun()
+            elif status == "already_used":
+                st.error("This authenticator code has already been used. Wait until your app shows the next 6-digit code, then submit it once.")
             else:
-                st.error("Email or authenticator code is invalid.")
+                st.error("The recovery email or authenticator code is invalid. Check that you selected the correct account and authenticator entry.")
     else:
         if st.button("Send one-time code to my recovery email", key="alternative_send_email_code"):
             username, role = auth_security.get_staff_by_recovery_email("database.db", email)
@@ -1123,6 +1130,7 @@ def check_password():
             submitted = st.form_submit_button("Verify and continue", type="primary")
         if submitted:
             valid = False
+            totp_status = "invalid"
             if len(code.strip()) == 6 and code.strip().isdigit():
                 if pending["mode"] == "enroll":
                     valid = auth_security.enable_totp(
@@ -1130,7 +1138,8 @@ def check_password():
                         st.session_state.get("staff_2fa_secret_pending", ""), code.strip()
                     )
                 else:
-                    valid = auth_security.verify_totp("database.db", username, code.strip())
+                    totp_status = auth_security.verify_totp_detailed("database.db", username, code.strip())
+                    valid = totp_status == "valid"
             if valid and pending["mode"] == "enroll" and not st.session_state.get("staff_enroll_email_verified"):
                 st.error("Verify your recovery email before enabling staff 2FA.")
                 valid = False
@@ -1146,7 +1155,10 @@ def check_password():
                 st.rerun()
             else:
                 attempts, otp_newly_blocked = _record_login_failure("database.db", otp_guard_key, otp_guard_type)
-                st.error("Invalid or expired code. Please try again.")
+                if totp_status == "already_used":
+                    st.error("This authenticator code has already been used. Wait for the next 30-second code and submit it once.")
+                else:
+                    st.error("Invalid or expired code. Check the authenticator entry and your device time, then try the current code.")
                 if attempts >= 3:
                     log_event("database.db", username, "STAFF_2FA_FAILED", f"Invalid authenticator codes: {attempts}.")
                 if attempts == 3 or otp_newly_blocked:
