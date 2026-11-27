@@ -1009,7 +1009,7 @@ def check_password():
             st.session_state.pop("staff_2fa_pending", None)
             st.session_state.pop("staff_2fa_secret_pending", None)
             st.session_state.pop("staff_2fa_failures", None)
-            st.session_state["login_password"] = ""
+            st.session_state.pop("login_password", None)
             st.rerun()
         return False
 
