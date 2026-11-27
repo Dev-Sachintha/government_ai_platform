@@ -16,7 +16,7 @@ import persist
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
-from db_utils import init_db, is_safe_select, log_event
+from db_utils import init_db, is_safe_select, log_event, log_usage_event, update_user_presence, remove_user_presence
 from validation_utils import validate_and_restore_sqlite
 import library
 import llm
@@ -1136,6 +1136,64 @@ def render_library_tab(db_path, user_role, username, llm_cfg):
                         st.rerun()
 
 
+
+def render_admin_dashboard(db_path: str):
+    if st.session_state.get("role") != "admin":
+        st.error("Admin permission required.")
+        log_event(db_path, st.session_state.get("current_user", "?"), "BLOCKED_ADMIN_DASHBOARD", "")
+        return
+    @st.fragment(run_every=15)
+    def live():
+        import plotly.express as px
+        period = st.selectbox("Report period", ["Daily", "Monthly", "Yearly"], key="analytics_period")
+        interval = {"Daily":"-30 days","Monthly":"-365 days","Yearly":"-5 years"}[period]
+        con=sqlite3.connect(db_path)
+        events=pd.read_sql_query("SELECT timestamp,username,role,event_type,details FROM usage_events WHERE timestamp >= datetime('now', ?) ORDER BY timestamp",con,params=(interval,))
+        online=pd.read_sql_query("SELECT username,role,last_seen FROM user_sessions WHERE last_seen >= datetime('now','-90 seconds') ORDER BY last_seen DESC",con)
+        failed=con.execute("SELECT COUNT(*) FROM audit_logs WHERE action='LOGIN_FAILED' AND timestamp >= datetime('now','-24 hours')").fetchone()[0]
+        disabled=con.execute("SELECT COUNT(*) FROM app_users WHERE active=0").fetchone()[0]
+        total=con.execute("SELECT COUNT(*) FROM app_users").fetchone()[0]
+        con.close()
+        cols=st.columns(5)
+        cols[0].metric("Online users",online.username.nunique() if not online.empty else 0)
+        cols[1].metric("Sessions",len(online))
+        cols[2].metric("Registered users",total)
+        cols[3].metric("Failed logins (24h)",failed)
+        cols[4].metric("Disabled accounts",disabled)
+        if not events.empty:
+            events["timestamp"]=pd.to_datetime(events.timestamp,errors="coerce")
+            events=events.dropna(subset=["timestamp"])
+            if period=="Daily": events["bucket"]=events.timestamp.dt.strftime("%Y-%m-%d")
+            elif period=="Monthly": events["bucket"]=events.timestamp.dt.to_period("M").astype(str)
+            else: events["bucket"]=events.timestamp.dt.year.astype(str)
+            kind=st.selectbox("Chart type",["Line chart","Bar chart","Pie chart","Donut chart","Scatter plot","Histogram"],key="analytics_chart")
+            if kind=="Line chart":
+                data=events.groupby("bucket",as_index=False).size(); fig=px.line(data,x="bucket",y="size",markers=True,title="Usage over time")
+            elif kind=="Bar chart":
+                data=events.groupby("bucket",as_index=False).size(); fig=px.bar(data,x="bucket",y="size",title="Activity volume")
+            elif kind in ["Pie chart","Donut chart"]:
+                data=events.event_type.value_counts().rename_axis("event").reset_index(name="count"); fig=px.pie(data,names="event",values="count",hole=.48 if kind=="Donut chart" else 0,title="Event distribution")
+            elif kind=="Scatter plot":
+                data=events.groupby(events.timestamp.dt.date).agg(events=("event_type","size"),users=("username","nunique")).reset_index(); fig=px.scatter(data,x="users",y="events",title="Daily active users vs activity")
+            else: fig=px.histogram(events,x="event_type",title="Event frequency")
+            fig.update_layout(height=350); st.plotly_chart(fig,use_container_width=True)
+            st.subheader("Most / least searched topics")
+            search=events[events.event_type=="CHAT_SEARCH"]
+            if not search.empty:
+                terms=search.details.fillna("").value_counts().rename_axis("topic").reset_index(name="searches")
+                left,right=st.columns(2)
+                left.plotly_chart(px.bar(terms.head(10),x="searches",y="topic",orientation="h",title="Top searched"),use_container_width=True)
+                right.plotly_chart(px.bar(terms.sort_values(["searches","topic"]).head(10),x="searches",y="topic",orientation="h",title="Least searched"),use_container_width=True)
+            else: st.info("Search trends appear after chat searches are recorded.")
+        else: st.info("No usage events recorded yet.")
+        st.subheader("Currently online"); st.dataframe(online,use_container_width=True,hide_index=True)
+        con=sqlite3.connect(db_path)
+        security=pd.read_sql_query("SELECT timestamp,username,action,details FROM audit_logs WHERE action IN ('LOGIN_FAILED','BLOCKED_SQL','BLOCKED_ADMIN_DASHBOARD','USER_DISABLED') ORDER BY id DESC LIMIT 100",con); con.close()
+        st.subheader("Security events"); st.dataframe(security,use_container_width=True,hide_index=True)
+        st.caption("Disable unauthorized accounts in User Management. Failed login attempts and blocked actions are listed here.")
+    live()
+
+
 def main():
     st.set_page_config(
         page_title="Government AI Workspace", page_icon="💬", layout="wide"
@@ -1159,6 +1217,13 @@ def main():
     if not check_password():
         return
 
+    user_role = st.session_state.get("role", "user")
+    username = st.session_state.get("current_user", "User")
+    if "analytics_session_id" not in st.session_state:
+        st.session_state["analytics_session_id"] = secrets.token_urlsafe(18)
+    _presence_id = st.session_state["analytics_session_id"]
+    update_user_presence(db_path, _presence_id, username, user_role)
+
     # Background ticker. It used to re-run the WHOLE page every second (st_autorefresh); a re-run that arrives
     # while the page is still processing a click makes Streamlit drop that click (buttons / forms "do nothing").
     # A fragment only re-runs itself and asks for a full re-run only when something really needs it.
@@ -1169,6 +1234,7 @@ def main():
 
         @st.fragment(run_every=1 if _busy else 10)
         def _ticker():
+            update_user_presence(db_path, _presence_id, username, user_role)
             if client_ts := st.query_params.get("user_active_ts"):     # activity reported by the browser
                 if client_ts != st.session_state.get("client_last_active_ts", 0):
                     st.session_state["client_last_active_ts"] = client_ts
@@ -1185,9 +1251,6 @@ def main():
 
         _ticker()
     client_activity_and_shortcuts()
-
-    user_role = st.session_state.get("role", "user")
-    username = st.session_state.get("current_user", "User")
 
     render_sidebar_controls(db_path, user_role)
 
@@ -1215,6 +1278,7 @@ def main():
     # Ordinary users see ONLY: AI Workspace & Chat, Scan, HoloMotion 3D. The other tabs are not even created,
     # so there is nothing for them to open (the role comes from the login, not from anything the user can edit).
     tab_defs = [
+        ("admin_dash", "📊 Live Analytics (Admin)", user_role == "admin"),
         ("chat", "💬 AI Workspace & Chat", True),
         ("web", "🌐 Website Sources", is_staff),
         ("lib", "🖼️ Image & PDF Library", is_staff),
@@ -1228,6 +1292,10 @@ def main():
     ]
     visible = [(k, label) for k, label, allowed in tab_defs if allowed]
     tabs = dict(zip([k for k, _ in visible], st.tabs([label for _, label in visible])))
+
+    if user_role == "admin":
+        with tabs["admin_dash"]:
+            render_admin_dashboard(db_path)
 
     with tabs["chat"]:
         render_ai_chat_interface(db_path, llm_cfg, user_role, username)
