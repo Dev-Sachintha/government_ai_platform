@@ -75,8 +75,8 @@ def send_code(db_path, username, phone, channel="sms", enroll=False):
         return False, "Could not send OTP. Check Twilio configuration, verified destination and account balance."
     digest = hashlib.sha256(("govai-phone-otp:" + username.lower() + ":" + code).encode()).hexdigest()
     with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE staff_phone_2fa SET otp_hash=?,otp_expires=?,last_sent=?,verified=CASE WHEN ? THEN verified ELSE 0 END WHERE username=? COLLATE NOCASE",
-                     (digest, now + 300, now, int(enroll), username))
+        conn.execute("UPDATE staff_phone_2fa SET otp_hash=?,otp_expires=?,last_sent=?,WHERE username=? COLLATE NOCASE",
+                     (digest, now + 300, now, username))
     return True, "Verification code sent."
 
 
