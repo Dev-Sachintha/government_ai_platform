@@ -370,7 +370,7 @@ def send_recovery_email_code(email, code):
     message["From"] = _setting("SMTP_FROM_EMAIL", _setting("SMTP_USERNAME")).strip()
     message["To"] = str(email).strip()
     message.set_content(
-        f"Your Government AI Platform verification code is: {code}\\n\\n"
+        f"Your Government AI Platform verification code is: {code}\n\n"
         "This code expires in 10 minutes. If you did not request it, ignore this email. "
         "Never share this code with anyone."
     )
