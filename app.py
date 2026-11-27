@@ -767,10 +767,12 @@ def check_password():
             st.session_state["last_active"] = time.time()
             st.session_state["auth_error"] = False
             log_event("database.db", user, "LOGIN", f"role={role}")
+            log_usage_event("database.db", user, role, "LOGIN", "")
         else:
             st.session_state["authenticated"] = False
             st.session_state["auth_error"] = True
             log_event("database.db", user or "?", "LOGIN_FAILED", "")
+            log_usage_event("database.db", user or "?", "unknown", "LOGIN_FAILED", "")
 
     if st.session_state.get("authenticated", False):
         return check_session_timeout()
@@ -872,6 +874,8 @@ def render_sidebar_controls(db_path, user_role):
 
             if st.button("🚪 Logout", use_container_width=True):
                 log_event(db_path, username, "LOGOUT", "")
+                log_usage_event(db_path, username, user_role, "LOGOUT", "")
+                remove_user_presence(db_path, st.session_state.get("analytics_session_id", ""))
                 st.session_state["authenticated"] = False
                 st.rerun()
 
