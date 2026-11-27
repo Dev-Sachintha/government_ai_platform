@@ -890,6 +890,56 @@ def _finish_staff_login(username: str, role: str) -> None:
         )
 
 
+
+def _render_staff_account_recovery():
+    st.subheader("🛟 Forgot Username / Password?")
+    st.caption("Enter one unused recovery code and the current 6-digit code from your authenticator app.")
+    with st.form("staff_recovery_verify_form"):
+        recovery_code = st.text_input("One-time Recovery Code", max_chars=32).strip().upper()
+        totp_code = st.text_input("Authenticator 6-digit code", max_chars=6)
+        verify = st.form_submit_button("Verify recovery details", type="primary")
+    if verify:
+        username, role = auth_security.identify_recovery_code("database.db", recovery_code)
+        if username and len(totp_code.strip()) == 6 and totp_code.strip().isdigit() and auth_security.verify_totp("database.db", username, totp_code.strip()):
+            st.session_state["staff_recovery_verified"] = {"username": username, "role": role, "code": recovery_code}
+            st.success("Verification successful. Set a new username and password below.")
+            st.rerun()
+        else:
+            st.error("Recovery code or authenticator code is invalid.")
+            log_event("database.db", "staff-recovery", "STAFF_RECOVERY_FAILED", "Invalid recovery code or TOTP.")
+    verified = st.session_state.get("staff_recovery_verified")
+    if verified:
+        with st.form("staff_recovery_reset_form"):
+            new_username = st.text_input("New username", max_chars=40)
+            new_password = st.text_input("New password", type="password")
+            confirm_password = st.text_input("Confirm new password", type="password")
+            reset = st.form_submit_button("Reset username and password", type="primary")
+        if reset:
+            new_username = new_username.strip()
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
+                st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
+            elif len(new_password) < 10:
+                st.error("Password must contain at least 10 characters.")
+            elif new_password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                salt = secrets.token_hex(16)
+                digest = _password_digest(new_password, salt)
+                ok, result = auth_security.consume_recovery_code_and_update(
+                    "database.db", verified["code"], new_username, digest, salt
+                )
+                if ok:
+                    log_event("database.db", new_username, "STAFF_ACCOUNT_RECOVERY", "Username and password reset using recovery code and TOTP.")
+                    auth_security.send_security_alert("Staff account recovered", new_username, "Username/password changed after recovery-code and TOTP verification.")
+                    st.session_state.pop("staff_recovery_verified", None)
+                    st.session_state["staff_recovery_success"] = True
+                    st.rerun()
+                else:
+                    st.error(result)
+    if st.session_state.pop("staff_recovery_success", False):
+        st.success("Account updated. Please sign in using your new username and password.")
+
+
 def check_password():
     if st.session_state.get("auth_timeout_expired", False):
         st.warning("⚠️ Your session expired due to inactivity. Please log in again.")
@@ -1008,6 +1058,10 @@ def check_password():
                     valid = auth_security.verify_totp("database.db", username, code.strip())
             if valid:
                 _clear_login_guard("database.db", otp_guard_key)
+                if pending["mode"] == "enroll":
+                    st.session_state["staff_recovery_codes_once"] = auth_security.generate_recovery_codes("database.db", username)
+                    log_event("database.db", username, "STAFF_RECOVERY_CODES_CREATED", "Initial one-time recovery codes generated.")
+                    save_now()
                 _finish_staff_login(username, role)
                 st.rerun()
             else:
@@ -1037,13 +1091,40 @@ def check_password():
             st.form_submit_button("Login", on_click=password_entered, type="primary")
             if st.session_state.get("auth_error", False):
                 st.error(st.session_state.get("auth_error_message", "😕 Invalid username or password."))
+        with st.expander("Forgot Username / Password?"):
+            _render_staff_account_recovery()
     return False
 
+
+
+def _show_staff_recovery_codes():
+    codes = st.session_state.get("staff_recovery_codes_once")
+    if codes:
+        with st.sidebar.expander("🔑 Save your new recovery codes", expanded=True):
+            st.warning("These codes are shown only now. Save them somewhere secure. Each code can be used once.")
+            st.code("\\n".join(codes))
+            if st.button("I have saved these codes", key="dismiss_staff_recovery_codes"):
+                st.session_state.pop("staff_recovery_codes_once", None)
+                st.rerun()
+
+
+def _render_staff_recovery_management(db_path, username):
+    with st.expander("🔑 2FA Recovery Codes"):
+        st.caption("Generate 10 new one-time codes. This replaces and invalidates all previously generated codes.")
+        if st.button("Generate / Regenerate Recovery Codes", key="generate_staff_recovery_codes"):
+            codes = auth_security.generate_recovery_codes(db_path, username)
+            st.session_state["staff_recovery_codes_once"] = codes
+            log_event(db_path, username, "STAFF_RECOVERY_CODES_REGENERATED", "10 one-time recovery codes generated.")
+            save_now()
+            st.rerun()
 
 def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
         username = st.session_state.get("current_user", "User")
         render_sidebar_threads(db_path, username)
+        if user_role in ("admin", "analyst"):
+            _show_staff_recovery_codes()
+            _render_staff_recovery_management(db_path, username)
         if user_role in ("admin", "analyst"):
             if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
                 st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
