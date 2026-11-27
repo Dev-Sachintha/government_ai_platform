@@ -68,6 +68,31 @@ def init_db(db_path: str) -> None:
             """
         )
         conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS usage_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                username TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'user',
+                event_type TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT ''
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_time ON usage_events(timestamp);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(username, timestamp);")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                session_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                role TEXT NOT NULL,
+                last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_user_sessions_seen ON user_sessions(last_seen);")
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_web_pages_source ON web_pages(source_id);"
         )
         conn.execute(
@@ -139,3 +164,52 @@ def is_safe_select(sql: str) -> bool:
     if not re.match(r"^(select|with)\b", stmt, re.IGNORECASE):
         return False
     return not _FORBIDDEN.search(stmt)
+
+    
+def log_usage_event(db_path: str, username: str, role: str, event_type: str, details: str = "") -> None:
+    """Record privacy-conscious usage analytics without interrupting the user's task."""
+    try:
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO usage_events (username, role, event_type, details) VALUES (?, ?, ?, ?)",
+                (str(username)[:100], str(role)[:20], str(event_type)[:40], str(details)[:240]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def update_user_presence(db_path: str, session_id: str, username: str, role: str) -> None:
+    """Refresh a session heartbeat; stale sessions are excluded by dashboard queries."""
+    try:
+        init_db(db_path)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                """INSERT INTO user_sessions (session_id, username, role, last_seen)
+                   VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(session_id) DO UPDATE SET
+                     username=excluded.username, role=excluded.role, last_seen=CURRENT_TIMESTAMP""",
+                (str(session_id)[:100], str(username)[:100], str(role)[:20]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def remove_user_presence(db_path: str, session_id: str) -> None:
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("DELETE FROM user_sessions WHERE session_id = ?", (str(session_id)[:100],))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
