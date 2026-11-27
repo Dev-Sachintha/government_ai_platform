@@ -967,6 +967,11 @@ def check_password():
     pending = st.session_state.get("staff_2fa_pending")
     if pending:
         username, role = pending["username"], pending["role"]
+        otp_guard_key, otp_guard_type = _login_guard_key(username, role)
+        otp_blocked, _, otp_remaining = _login_guard_state("database.db", otp_guard_key)
+        if otp_blocked:
+            st.error(f"Too many invalid authenticator codes. This account is temporarily blocked. Try again in about {max(1, (otp_remaining + 59) // 60)} minute(s).")
+            return False
         st.subheader("🔐 Staff two-factor verification")
         if pending["mode"] == "enroll":
             secret = st.session_state.get("staff_2fa_secret_pending", "")
@@ -993,17 +998,18 @@ def check_password():
                 else:
                     valid = auth_security.verify_totp("database.db", username, code.strip())
             if valid:
+                _clear_login_guard("database.db", otp_guard_key)
                 _finish_staff_login(username, role)
                 st.rerun()
             else:
-                attempts = int(st.session_state.get("staff_2fa_failures", 0)) + 1
-                st.session_state["staff_2fa_failures"] = attempts
+                attempts, otp_newly_blocked = _record_login_failure("database.db", otp_guard_key, otp_guard_type)
                 st.error("Invalid or expired code. Please try again.")
-                if attempts == 3:
-                    log_event("database.db", username, "STAFF_2FA_FAILED", "Three invalid authenticator codes.")
+                if attempts >= 3:
+                    log_event("database.db", username, "STAFF_2FA_FAILED", f"Invalid authenticator codes: {attempts}.")
+                if attempts == 3 or otp_newly_blocked:
                     auth_security.send_security_alert(
                         "Repeated failed 2FA verification", username,
-                        "Three invalid or expired authenticator codes were submitted during sign-in."
+                        f"Invalid or expired authenticator codes: {attempts}. Account lockout: {'yes' if otp_newly_blocked else 'no'}."
                     )
         if st.button("Cancel sign-in", key="cancel_staff_2fa"):
             st.session_state.pop("staff_2fa_pending", None)
