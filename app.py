@@ -893,20 +893,43 @@ def _finish_staff_login(username: str, role: str) -> None:
 
 def _render_staff_account_recovery():
     st.subheader("🛟 Forgot Username / Password?")
-    st.caption("Enter one unused recovery code and the current 6-digit code from your authenticator app.")
+    st.caption("Use one unused recovery code and the current 6-digit code from your authenticator app. Both are required.")
+    # Apply a separate IP-based rate limit because the account username is intentionally unknown here.
+    ip_hash = auth_security.client_ip_hash()
+    recovery_guard_key = hashlib.sha256(("staff-recovery:" + ip_hash).encode("utf-8")).hexdigest()
+    blocked, _, remaining = _login_guard_state("database.db", recovery_guard_key)
+    if blocked:
+        st.error(f"Too many recovery attempts. Try again in about {max(1, (remaining + 59) // 60)} minute(s).")
+        return
+
     with st.form("staff_recovery_verify_form"):
-        recovery_code = st.text_input("One-time Recovery Code", max_chars=32).strip().upper()
-        totp_code = st.text_input("Authenticator 6-digit code", max_chars=6)
+        recovery_code = st.text_input("One-time Recovery Code", max_chars=32, help="Enter one of the 10 codes saved when 2FA was enabled.").strip().upper()
+        totp_code = st.text_input("Authenticator 6-digit code", max_chars=6, placeholder="000000")
         verify = st.form_submit_button("Verify recovery details", type="primary")
     if verify:
         username, role = auth_security.identify_recovery_code("database.db", recovery_code)
-        if username and len(totp_code.strip()) == 6 and totp_code.strip().isdigit() and auth_security.verify_totp("database.db", username, totp_code.strip()):
-            st.session_state["staff_recovery_verified"] = {"username": username, "role": role, "code": recovery_code, "verified_at": time.time()}
+        valid_totp = bool(
+            username and len(totp_code.strip()) == 6 and totp_code.strip().isdigit()
+            and auth_security.verify_totp("database.db", username, totp_code.strip())
+        )
+        if username and valid_totp:
+            _clear_login_guard("database.db", recovery_guard_key)
+            st.session_state["staff_recovery_verified"] = {
+                "username": username, "role": role, "code": recovery_code,
+                "verified_at": time.time()
+            }
             st.success("Verification successful. Set a new username and password below.")
             st.rerun()
         else:
+            attempts, newly_blocked = _record_login_failure("database.db", recovery_guard_key, "recovery_ip")
             st.error("Recovery code or authenticator code is invalid.")
-            log_event("database.db", "staff-recovery", "STAFF_RECOVERY_FAILED", "Invalid recovery code or TOTP.")
+            log_event("database.db", "staff-recovery", "STAFF_RECOVERY_FAILED", f"Invalid recovery details; attempts={attempts}.")
+            if attempts >= 3 or newly_blocked:
+                auth_security.send_security_alert(
+                    "Repeated staff account recovery attempts", "unknown",
+                    f"Invalid recovery attempts from a client IP. Attempts: {attempts}; blocked: {'yes' if newly_blocked else 'no'}."
+                )
+
     verified = st.session_state.get("staff_recovery_verified")
     if verified and time.time() - verified.get("verified_at", 0) > 300:
         st.session_state.pop("staff_recovery_verified", None)
@@ -922,8 +945,8 @@ def _render_staff_account_recovery():
             new_username = new_username.strip()
             if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
                 st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
-            elif len(new_password) < 10:
-                st.error("Password must contain at least 10 characters.")
+            elif len(new_password) < 12:
+                st.error("For better security, the new password must contain at least 12 characters.")
             elif new_password != confirm_password:
                 st.error("Passwords do not match.")
             else:
@@ -933,16 +956,23 @@ def _render_staff_account_recovery():
                     "database.db", verified["code"], new_username, digest, salt
                 )
                 if ok:
-                    log_event("database.db", new_username, "STAFF_ACCOUNT_RECOVERY", "Username and password reset using recovery code and TOTP.")
-                    auth_security.send_security_alert("Staff account recovered", new_username, "Username/password changed after recovery-code and TOTP verification.")
+                    # A recovery consumes the submitted code and invalidates the old set.
+                    # Issue a fresh set immediately so the staff member is not stranded.
+                    fresh_codes = auth_security.generate_recovery_codes("database.db", new_username)
+                    st.session_state["staff_recovery_codes_once"] = fresh_codes
+                    log_event("database.db", new_username, "STAFF_ACCOUNT_RECOVERY", "Username/password reset using recovery code and TOTP; fresh recovery codes issued.")
+                    auth_security.send_security_alert(
+                        "Staff account recovered", new_username,
+                        "Username/password changed after recovery-code and TOTP verification. Previous recovery codes were invalidated and a new set was issued."
+                    )
                     st.session_state.pop("staff_recovery_verified", None)
                     st.session_state["staff_recovery_success"] = True
+                    save_now()
                     st.rerun()
                 else:
                     st.error(result)
     if st.session_state.pop("staff_recovery_success", False):
-        st.success("Account updated. Please sign in using your new username and password.")
-
+        st.success("Account updated. Sign in with your new username and password. Save the new recovery codes shown after login.")
 
 def check_password():
     if st.session_state.get("auth_timeout_expired", False):
