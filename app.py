@@ -933,7 +933,7 @@ def _render_staff_recovery_email_setup(db_path, username):
 
 def _render_staff_alternative_login():
     st.subheader("🔐 Try another option")
-    st.caption("Use your previously verified recovery email, then choose Authenticator or Email code.")
+    st.caption("Any account with a verified recovery email can sign in using its Authenticator or a one-time email code.")
     email = st.text_input("Verified recovery email", key="alternative_login_email").strip().lower()
     method = st.radio("Verification method", ["Authenticator app (6-digit code)", "Recovery email (one-time code)"], key="alternative_login_method")
     if method.startswith("Authenticator"):
@@ -1018,7 +1018,7 @@ def check_password():
             _clear_login_guard("database.db", guard_key)
             st.session_state["auth_error"] = False
             st.session_state.pop("auth_error_message", None)
-            if role in ("admin", "analyst"):
+            if role in ("admin", "analyst", "user"):
                 try:
                     auth_security.ensure_security_table("database.db")
                     if auth_security.totp_is_enabled("database.db", user):
@@ -1031,7 +1031,7 @@ def check_password():
                         st.session_state["staff_2fa_pending"] = {"username": user, "role": role, "mode": "enroll"}
                 except Exception as exc:
                     st.session_state["auth_error"] = True
-                    st.session_state["auth_error_message"] = f"Staff 2FA is not configured correctly. Contact the platform administrator. ({exc})"
+                    st.session_state["auth_error_message"] = f"Account 2FA is not configured correctly. Contact the platform administrator. ({exc})"
                     return
                 return
             st.session_state["authenticated"] = True
@@ -1072,7 +1072,7 @@ def check_password():
         if otp_blocked:
             st.error(f"Too many invalid authenticator codes. This account is temporarily blocked. Try again in about {max(1, (otp_remaining + 59) // 60)} minute(s).")
             return False
-        st.subheader("🔐 Staff two-factor verification")
+        st.subheader("🔐 Account two-factor verification")
         if pending["mode"] == "enroll":
             secret = st.session_state.get("staff_2fa_secret_pending", "")
             st.info("Set up a time-based authenticator (TOTP). Compatible apps include Google Authenticator, Microsoft Authenticator, Apple Passwords, 1Password, Bitwarden, Authy and Aegis.")
@@ -1082,7 +1082,7 @@ def check_password():
             st.markdown("**Scan this QR code with your authenticator app:**")
             try:
                 qr_image = auth_security.provisioning_qr_code(username, secret)
-                st.image(qr_image, caption="Government AI Platform — staff 2FA setup", width=230)
+                st.image(qr_image, caption="Government AI Platform — account 2FA setup", width=230)
             except Exception as exc:
                 st.warning(f"QR code could not be displayed. Use the setup key below instead. ({exc})")
             with st.expander("Manual setup (if QR scanning is unavailable)"):
@@ -1090,7 +1090,7 @@ def check_password():
                 st.code(secret)
                 st.markdown("**Authenticator setup URI:**")
                 st.code(auth_security.provisioning_uri(username, secret))
-            st.caption("After scanning, verify your recovery email below, then enter the current 6-digit code from your authenticator app.")
+            st.caption("After scanning, verify your recovery email below, then enter the current 6-digit code from your authenticator app. This setup applies to Admin, Analyst and User accounts.")
             with st.form("first_2fa_recovery_email_send_form"):
                 setup_email = st.text_input("Recovery email address", placeholder="name@example.com")
                 send_setup_email = st.form_submit_button("Send email verification code")
