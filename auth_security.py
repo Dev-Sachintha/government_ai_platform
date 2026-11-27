@@ -133,28 +133,50 @@ def enable_totp(db_path, username, secret, code):
     return True
 
 
-def verify_totp(db_path, username, code):
+def verify_totp_detailed(db_path, username, code):
+    """Verify a TOTP once and explain whether it was invalid or already consumed.
+
+    A code is intentionally accepted only once per 30-second time step. This
+    prevents replay attacks while giving the login UI an actionable message.
+    """
     ensure_security_table(db_path)
     with sqlite3.connect(db_path, timeout=10) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT totp_secret_enc, last_totp_step FROM staff_security WHERE username=? COLLATE NOCASE AND enabled=1",
             (username,),
         ).fetchone()
         if not row:
-            return False
+            conn.rollback()
+            return "invalid"
         try:
             secret = _fernet().decrypt(row[0].encode("ascii")).decode("utf-8")
         except (InvalidToken, ValueError, RuntimeError):
-            return False
+            conn.rollback()
+            return "invalid"
         step = _matching_totp_step(secret, code)
-        if step is None or step <= int(row[1] if row[1] is not None else -1):
-            return False
+        if step is None:
+            conn.rollback()
+            return "invalid"
+        last_step = int(row[1] if row[1] is not None else -1)
+        if step <= last_step:
+            conn.rollback()
+            return "already_used"
         cursor = conn.execute(
             "UPDATE staff_security SET last_totp_step=?, updated_at=CURRENT_TIMESTAMP "
             "WHERE username=? COLLATE NOCASE AND enabled=1 AND last_totp_step < ?",
             (step, username, step),
         )
-        return cursor.rowcount == 1
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return "already_used"
+        conn.commit()
+        return "valid"
+
+
+def verify_totp(db_path, username, code):
+    """Backward-compatible boolean TOTP verification helper."""
+    return verify_totp_detailed(db_path, username, code) == "valid"
 
 
 def client_ip_hash():
