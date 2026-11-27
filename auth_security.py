@@ -48,12 +48,18 @@ def ensure_security_table(db_path):
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_ip_hash TEXT NOT NULL DEFAULT '',
                 last_totp_step INTEGER NOT NULL DEFAULT -1,
+                recovery_email TEXT NOT NULL DEFAULT '',
+                recovery_email_verified INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(staff_security)")}
         if "last_totp_step" not in columns:
             conn.execute("ALTER TABLE staff_security ADD COLUMN last_totp_step INTEGER NOT NULL DEFAULT -1")
+        if "recovery_email" not in columns:
+            conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email TEXT NOT NULL DEFAULT ''")
+        if "recovery_email_verified" not in columns:
+            conn.execute("ALTER TABLE staff_security ADD COLUMN recovery_email_verified INTEGER NOT NULL DEFAULT 0")
 
 
 def totp_is_enabled(db_path, username):
@@ -285,3 +291,57 @@ def consume_recovery_code_and_update(db_path, code, new_username, password_hash,
         except sqlite3.IntegrityError:
             conn.rollback()
             return False, "That username is already taken."
+
+
+def set_recovery_email(db_path, username, email):
+    """Save an email address only after the caller has verified its one-time code."""
+    ensure_security_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE staff_security SET recovery_email=?, recovery_email_verified=1, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE AND enabled=1",
+            (str(email).strip().lower(), username),
+        )
+
+
+def get_staff_by_recovery_email(db_path, email):
+    ensure_security_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT s.username, u.role FROM staff_security s
+               JOIN app_users u ON u.username=s.username COLLATE NOCASE
+               WHERE lower(s.recovery_email)=lower(?) AND s.recovery_email_verified=1
+                 AND s.enabled=1 AND u.active=1 AND u.role IN ('admin','analyst') LIMIT 1""",
+            (str(email).strip(),),
+        ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def send_recovery_email_code(email, code):
+    """Send a short-lived sign-in/enrollment verification code using configured SMTP."""
+    host = _setting("SMTP_HOST").strip()
+    try:
+        port = int(_setting("SMTP_PORT", "465") or "465")
+    except (TypeError, ValueError):
+        return False
+    smtp_user = _setting("SMTP_USERNAME").strip()
+    smtp_password = _setting("SMTP_PASSWORD")
+    sender = _setting("SMTP_FROM_EMAIL", smtp_user).strip()
+    if not all((host, smtp_user, smtp_password, sender, email)):
+        return False
+    message = EmailMessage()
+    message["Subject"] = "Government AI Platform - verification code"
+    message["From"] = sender
+    message["To"] = str(email).strip()
+    message.set_content(
+        f"Your Government AI Platform verification code is: {code}\n\n"
+        "This code expires in 10 minutes. If you did not request it, ignore this email. "
+        "Never share this code with anyone."
+    )
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(host, port, context=context, timeout=12) as server:
+            server.login(smtp_user, smtp_password)
+            server.send_message(message)
+        return True
+    except Exception:
+        return False
