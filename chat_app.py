@@ -14,7 +14,7 @@ import streamlit.components.v1 as components
 
 import library
 import llm
-from db_utils import is_safe_select, log_event
+from db_utils import is_safe_select, log_event, log_usage_event
 
 STOP_WORDS = {
     "what",
@@ -1135,6 +1135,12 @@ def render_ai_chat_interface(
             user_prompt = typed_prompt
 
         if user_prompt:
+            # Store compact topic keywords, not the full prompt or attachments.
+            search_terms = _extract_keywords(user_prompt)
+            log_usage_event(
+                db_path, username, st.session_state.get("role", "user"),
+                "CHAT_SEARCH", " ".join(search_terms[:6])[:180] or "other"
+            )
             vision_model = (
                 st.session_state.get("vision_model") or llm_cfg["vision_model"]
             )
