@@ -751,6 +751,104 @@ def client_activity_and_shortcuts():
             st.session_state["last_active"] = time.time()
 
 
+LOGIN_RATE_WINDOW_SECONDS = 15 * 60
+LOGIN_RATE_BLOCK_SECONDS = 15 * 60
+LOGIN_RATE_MAX_FAILURES = 8
+
+
+def _login_guard_key(username: str) -> tuple[str, str]:
+    """Use the reverse-proxy client IP when available; otherwise fall back to username."""
+    try:
+        headers = st.context.headers
+        forwarded = str(headers.get("X-Forwarded-For", "")).split(",")[0].strip()
+        candidate = forwarded or str(headers.get("X-Real-IP", "")).strip()
+        if candidate and candidate.lower() not in ("unknown", "none"):
+            import ipaddress
+            candidate = str(ipaddress.ip_address(candidate))
+            return hashlib.sha256(("ip:" + candidate).encode("utf-8")).hexdigest(), "ip"
+    except Exception:
+        pass
+    # Some hosting/proxy setups do not expose the client IP to Streamlit.
+    # In that case rate-limit the account name rather than grouping all visitors together.
+    normalized = (username or "?").strip().casefold()[:100]
+    return hashlib.sha256(("user:" + normalized).encode("utf-8")).hexdigest(), "username"
+
+
+def _login_guard_state(db_path: str, guard_key: str) -> tuple[bool, int, int]:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS login_guard (
+                guard_key TEXT PRIMARY KEY,
+                key_type TEXT NOT NULL,
+                failures INTEGER NOT NULL DEFAULT 0,
+                window_start REAL NOT NULL,
+                blocked_until REAL NOT NULL DEFAULT 0,
+                last_attempt REAL NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT failures, window_start, blocked_until FROM login_guard WHERE guard_key=?",
+            (guard_key,),
+        ).fetchone()
+        conn.commit()
+        if not row:
+            return False, 0, 0
+        now = time.time()
+        blocked_until = int(row[2] or 0)
+        return blocked_until > now, int(row[0]), max(0, blocked_until - int(now))
+    finally:
+        conn.close()
+
+
+def _record_login_failure(db_path: str, guard_key: str, key_type: str) -> tuple[int, bool]:
+    now = time.time()
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS login_guard (
+                guard_key TEXT PRIMARY KEY,
+                key_type TEXT NOT NULL,
+                failures INTEGER NOT NULL DEFAULT 0,
+                window_start REAL NOT NULL,
+                blocked_until REAL NOT NULL DEFAULT 0,
+                last_attempt REAL NOT NULL
+            )
+        """)
+        row = conn.execute(
+            "SELECT failures, window_start, blocked_until FROM login_guard WHERE guard_key=?",
+            (guard_key,),
+        ).fetchone()
+        if row and row[2] and row[2] > now:
+            return int(row[0]), True
+        if not row or now - float(row[1]) > LOGIN_RATE_WINDOW_SECONDS:
+            failures, window_start = 1, now
+        else:
+            failures, window_start = int(row[0]) + 1, float(row[1])
+        blocked_until = now + LOGIN_RATE_BLOCK_SECONDS if failures >= LOGIN_RATE_MAX_FAILURES else 0
+        conn.execute("""
+            INSERT INTO login_guard(guard_key,key_type,failures,window_start,blocked_until,last_attempt)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(guard_key) DO UPDATE SET
+                key_type=excluded.key_type, failures=excluded.failures,
+                window_start=excluded.window_start, blocked_until=excluded.blocked_until,
+                last_attempt=excluded.last_attempt
+        """, (guard_key, key_type, failures, window_start, blocked_until, now))
+        conn.commit()
+        return failures, bool(blocked_until)
+    finally:
+        conn.close()
+
+
+def _clear_login_guard(db_path: str, guard_key: str) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("DELETE FROM login_guard WHERE guard_key=?", (guard_key,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def check_password():
     if st.session_state.get("auth_timeout_expired", False):
         st.warning("⚠️ Your session expired due to inactivity. Please log in again.")
@@ -759,18 +857,39 @@ def check_password():
     def password_entered():
         user = st.session_state.get("login_username", "").strip()
         pwd = st.session_state.get("login_password", "")
+        guard_key, key_type = _login_guard_key(user)
+        blocked, failures, remaining = _login_guard_state("database.db", guard_key)
+        if blocked:
+            st.session_state["authenticated"] = False
+            st.session_state["auth_error"] = True
+            st.session_state["auth_error_message"] = (
+                f"Too many failed attempts. This {key_type} is temporarily blocked. "
+                f"Try again in about {max(1, (remaining + 59) // 60)} minute(s)."
+            )
+            log_event("database.db", user or "?", "LOGIN_BLOCKED", f"type={key_type}; key={guard_key[:16]}")
+            return
         role = verify_credentials(user, pwd)
         if role:
+            _clear_login_guard("database.db", guard_key)
             st.session_state["authenticated"] = True
             st.session_state["current_user"] = user
             st.session_state["role"] = role
             st.session_state["last_active"] = time.time()
             st.session_state["auth_error"] = False
+            st.session_state.pop("auth_error_message", None)
             log_event("database.db", user, "LOGIN", f"role={role}")
         else:
+            count, newly_blocked = _record_login_failure("database.db", guard_key, key_type)
             st.session_state["authenticated"] = False
             st.session_state["auth_error"] = True
-            log_event("database.db", user or "?", "LOGIN_FAILED", "")
+            if newly_blocked:
+                st.session_state["auth_error_message"] = (
+                    f"Too many failed attempts ({count}). This {key_type} is blocked for 15 minutes."
+                )
+                log_event("database.db", user or "?", "LOGIN_IP_BLOCKED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
+            else:
+                st.session_state["auth_error_message"] = "Invalid username or password."
+            log_event("database.db", user or "?", "LOGIN_FAILED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
 
     if st.session_state.get("authenticated", False):
         return check_session_timeout()
@@ -783,7 +902,7 @@ def check_password():
             st.text_input("Password", type="password", key="login_password")
             st.form_submit_button("Login", on_click=password_entered, type="primary")
             if st.session_state.get("auth_error", False):
-                st.error("😕 Invalid username or password.")
+                st.error(st.session_state.get("auth_error_message", "😕 Invalid username or password."))
     return False
 
 
@@ -1190,9 +1309,32 @@ def render_admin_dashboard(db_path: str):
         else: st.info("No usage events recorded yet.")
         st.subheader("Currently online"); st.dataframe(online,use_container_width=True,hide_index=True)
         con=sqlite3.connect(db_path)
-        security=pd.read_sql_query("SELECT timestamp,username,action,details FROM audit_logs WHERE action IN ('LOGIN_FAILED','BLOCKED_SQL','BLOCKED_ADMIN_DASHBOARD','USER_DISABLED') ORDER BY id DESC LIMIT 100",con); con.close()
+        security=pd.read_sql_query("SELECT timestamp,username,action,details FROM audit_logs WHERE action IN ('LOGIN_FAILED','LOGIN_BLOCKED','LOGIN_IP_BLOCKED','BLOCKED_SQL','BLOCKED_ADMIN_DASHBOARD','USER_DISABLED') ORDER BY id DESC LIMIT 100",con)
+        try:
+            blocked_ips=pd.read_sql_query(
+                "SELECT guard_key, key_type, failures, blocked_until, last_attempt FROM login_guard WHERE blocked_until > ? ORDER BY blocked_until DESC",
+                con, params=(time.time(),)
+            )
+        except Exception:
+            blocked_ips=pd.DataFrame(columns=["guard_key","key_type","failures","blocked_until","last_attempt"])
         st.subheader("Security events"); st.dataframe(security,use_container_width=True,hide_index=True)
-        st.caption("Disable unauthorized accounts in User Management. Failed login attempts and blocked actions are listed here.")
+        st.subheader("🚫 Active temporary blocks")
+        if blocked_ips.empty:
+            st.success("No active login blocks.")
+        else:
+            display_blocks=blocked_ips.copy()
+            display_blocks["identifier"]=display_blocks.apply(lambda r: f"{r['key_type']} • {str(r['guard_key'])[:16]}…",axis=1)
+            display_blocks["blocked_until"]=pd.to_datetime(display_blocks["blocked_until"],unit="s").dt.strftime("%Y-%m-%d %H:%M:%S")
+            st.dataframe(display_blocks[["identifier","failures","blocked_until"]],use_container_width=True,hide_index=True)
+            selected=st.selectbox("Select a block to release",blocked_ips["guard_key"].tolist(),format_func=lambda k: f"{blocked_ips.loc[blocked_ips.guard_key==k,'key_type'].iloc[0]} • {k[:16]}…",key="release_login_block")
+            if st.button("🔓 Release selected block",key="release_login_block_btn"):
+                con.execute("DELETE FROM login_guard WHERE guard_key=?",(selected,))
+                con.commit()
+                log_event(db_path,st.session_state.get("current_user","admin"),"LOGIN_BLOCK_RELEASED",f"key={selected[:16]}")
+                st.success("Temporary block released.")
+                st.rerun()
+        con.close()
+        st.caption("Automatic protection: 8 failed attempts within 15 minutes trigger a 15-minute temporary block. IP addresses are hashed before storage; if the hosting proxy does not expose an IP, protection falls back to the username.")
     live()
 
 
