@@ -521,26 +521,3 @@ def consume_backup_code(db_path, username, code):
         conn.commit()
         return True
 
-def consume_staff_backup_code(db_path, username, code):
-    """Atomically consume one unused 8-digit backup code for this staff account."""
-    value = str(code).strip()
-    if not re.fullmatch(r"\d{8}", value):
-        return False
-    digest = _recovery_code_hash(value)
-    ensure_recovery_table(db_path)
-    with sqlite3.connect(db_path, timeout=10) as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT id FROM staff_recovery_codes WHERE username=? COLLATE NOCASE AND code_hash=? AND used_at IS NULL LIMIT 1",
-            (username, digest),
-        ).fetchone()
-        if not row:
-            conn.rollback()
-            return False
-        conn.execute("UPDATE staff_recovery_codes SET used_at=CURRENT_TIMESTAMP WHERE id=? AND used_at IS NULL", (row[0],))
-        if conn.total_changes < 1:
-            conn.rollback()
-            return False
-        conn.commit()
-        return True
-
