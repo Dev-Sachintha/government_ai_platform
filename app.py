@@ -1223,6 +1223,20 @@ def render_sidebar_controls(db_path, user_role):
         with st.expander("⚙️ Session & System Admin", expanded=False):
             st.success(f"User: **{username}** | Role: **{user_role.upper()}**")
 
+            if user_role == "admin":
+                with st.expander("📨 SMTP Email Delivery Test"):
+                    st.caption("Send a test message to verify the configured SMTP connection. Never enter SMTP passwords here.")
+                    test_email = st.text_input("Test recipient email", key="smtp_test_recipient").strip()
+                    if st.button("Send SMTP test email", key="smtp_test_send"):
+                        if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", test_email):
+                            st.error("Enter a valid recipient email address.")
+                        elif auth_security.send_smtp_test_email(test_email):
+                            log_event(db_path, username, "SMTP_TEST_EMAIL_SENT", "Admin-triggered SMTP test email sent.")
+                            st.success("SMTP test email accepted by the mail server. Check Inbox and Spam/Junk.")
+                        else:
+                            log_event(db_path, username, "SMTP_TEST_EMAIL_FAILED", "Admin-triggered SMTP test email failed; see server logs.")
+                            st.error("SMTP test failed. Check Streamlit Cloud logs for the safe diagnostic error.")
+
             elapsed = time.time() - st.session_state.get("last_active", time.time())
             remaining = max(0, int(TIMEOUT_SECONDS - elapsed))
             m, s = divmod(remaining, 60)
