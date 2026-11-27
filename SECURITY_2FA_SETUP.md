@@ -47,7 +47,7 @@ Save the setup key securely. Do not share it with anyone.
 ## 4. Alerts generated
 
 Email alerts are attempted for:
-- Three invalid authenticator codes during a sign-in.
+- Repeated invalid authenticator codes (alert at three failures; five failures within 15 minutes trigger the existing 30-minute account lockout).
 - Repeated failed staff passwords (from the third failure onward).
 - A staff account reaching the temporary login-block threshold.
 - A successful staff login from a previously recorded different client IP.
