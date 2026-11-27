@@ -6,6 +6,7 @@ Required secrets:
   SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL.
 """
 import hashlib
+import io
 import os
 import smtplib
 import sqlite3
@@ -13,6 +14,7 @@ import ssl
 from email.message import EmailMessage
 
 import pyotp
+import qrcode
 import streamlit as st
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -67,6 +69,24 @@ def provisioning_uri(username, secret):
     return pyotp.TOTP(secret).provisioning_uri(
         name=username, issuer_name="Government AI Platform"
     )
+
+def provisioning_qr_code(username, secret):
+    """Return a PNG QR code for scanning the TOTP provisioning URI."""
+    uri = provisioning_uri(username, secret)
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=4,
+    )
+    qr.add_data(uri)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    output.seek(0)
+    return output
+
 
 
 def enable_totp(db_path, username, secret, code):
