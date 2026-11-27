@@ -13,6 +13,7 @@ import requests
 import html
 import streamlit as st
 import persist
+import auth_security
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
@@ -868,6 +869,27 @@ def _clear_login_guard(db_path: str, guard_key: str) -> None:
         conn.close()
 
 
+def _finish_staff_login(username: str, role: str) -> None:
+    ip_hash = auth_security.client_ip_hash()
+    new_ip = auth_security.record_staff_ip("database.db", username, ip_hash)
+    st.session_state["authenticated"] = True
+    st.session_state["current_user"] = username
+    st.session_state["role"] = role
+    st.session_state["last_active"] = time.time()
+    st.session_state["auth_error"] = False
+    st.session_state.pop("auth_error_message", None)
+    st.session_state.pop("staff_2fa_pending", None)
+    st.session_state.pop("staff_2fa_secret_pending", None)
+    st.session_state.pop("staff_2fa_failures", None)
+    log_event("database.db", username, "LOGIN", f"role={role}; two_factor=verified")
+    if new_ip:
+        log_event("database.db", username, "SUSPICIOUS_LOGIN_NEW_IP", "Staff login from a previously unseen client IP.")
+        auth_security.send_security_alert(
+            "New staff login location", username,
+            "A successful staff login was completed from a client IP not previously recorded for this account."
+        )
+
+
 def check_password():
     if st.session_state.get("auth_timeout_expired", False):
         st.warning("⚠️ Your session expired due to inactivity. Please log in again.")
@@ -887,16 +909,35 @@ def check_password():
                 f"Try again in about {max(1, (remaining + 59) // 60)} minute(s)."
             )
             log_event("database.db", user or "?", "LOGIN_BLOCKED", f"type={key_type}; key={guard_key[:16]}")
+            if key_type == "account":
+                auth_security.send_security_alert("Staff account temporarily blocked", user, "The account reached the failed-password lockout threshold.")
             return
+
         role = verify_credentials(user, pwd)
         if role:
             _clear_login_guard("database.db", guard_key)
+            st.session_state["auth_error"] = False
+            st.session_state.pop("auth_error_message", None)
+            if role in ("admin", "analyst"):
+                try:
+                    auth_security.ensure_security_table("database.db")
+                    if auth_security.totp_is_enabled("database.db", user):
+                        st.session_state["staff_2fa_pending"] = {"username": user, "role": role, "mode": "verify"}
+                    else:
+                        secret = auth_security.new_totp_secret()
+                        # The encryption key must exist before an enrollment is offered.
+                        auth_security._fernet()
+                        st.session_state["staff_2fa_secret_pending"] = secret
+                        st.session_state["staff_2fa_pending"] = {"username": user, "role": role, "mode": "enroll"}
+                except Exception as exc:
+                    st.session_state["auth_error"] = True
+                    st.session_state["auth_error_message"] = f"Staff 2FA is not configured correctly. Contact the platform administrator. ({exc})"
+                    return
+                return
             st.session_state["authenticated"] = True
             st.session_state["current_user"] = user
             st.session_state["role"] = role
             st.session_state["last_active"] = time.time()
-            st.session_state["auth_error"] = False
-            st.session_state.pop("auth_error_message", None)
             log_event("database.db", user, "LOGIN", f"role={role}")
         else:
             count, newly_blocked = _record_login_failure("database.db", guard_key, key_type)
@@ -914,9 +955,63 @@ def check_password():
             else:
                 st.session_state["auth_error_message"] = "Invalid username or password."
             log_event("database.db", user or "?", "LOGIN_FAILED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
+            if key_type == "account" and (count >= 3 or newly_blocked):
+                auth_security.send_security_alert(
+                    "Repeated failed staff login", user,
+                    f"Failed password attempts: {count}. Account lockout: {'yes' if newly_blocked else 'no'}."
+                )
 
     if st.session_state.get("authenticated", False):
         return check_session_timeout()
+
+    pending = st.session_state.get("staff_2fa_pending")
+    if pending:
+        username, role = pending["username"], pending["role"]
+        st.subheader("🔐 Staff two-factor verification")
+        if pending["mode"] == "enroll":
+            secret = st.session_state.get("staff_2fa_secret_pending", "")
+            st.info("Set up an authenticator app before continuing. Add this account manually in Google Authenticator, Microsoft Authenticator, or another TOTP app.")
+            st.markdown("**Account:** " + username)
+            st.markdown("**Setup key (keep private):**")
+            st.code(secret)
+            st.markdown("**Authenticator setup URI:**")
+            st.code(auth_security.provisioning_uri(username, secret))
+            st.caption("Enter the 6-digit code shown by your authenticator app below to activate 2FA.")
+        else:
+            st.write(f"Enter the current 6-digit authenticator code for **{username}**.")
+        with st.form("staff_2fa_form"):
+            code = st.text_input("6-digit authentication code", max_chars=6, placeholder="000000")
+            submitted = st.form_submit_button("Verify and continue", type="primary")
+        if submitted:
+            valid = False
+            if len(code.strip()) == 6 and code.strip().isdigit():
+                if pending["mode"] == "enroll":
+                    valid = auth_security.enable_totp(
+                        "database.db", username,
+                        st.session_state.get("staff_2fa_secret_pending", ""), code.strip()
+                    )
+                else:
+                    valid = auth_security.verify_totp("database.db", username, code.strip())
+            if valid:
+                _finish_staff_login(username, role)
+                st.rerun()
+            else:
+                attempts = int(st.session_state.get("staff_2fa_failures", 0)) + 1
+                st.session_state["staff_2fa_failures"] = attempts
+                st.error("Invalid or expired code. Please try again.")
+                if attempts == 3:
+                    log_event("database.db", username, "STAFF_2FA_FAILED", "Three invalid authenticator codes.")
+                    auth_security.send_security_alert(
+                        "Repeated failed 2FA verification", username,
+                        "Three invalid or expired authenticator codes were submitted during sign-in."
+                    )
+        if st.button("Cancel sign-in", key="cancel_staff_2fa"):
+            st.session_state.pop("staff_2fa_pending", None)
+            st.session_state.pop("staff_2fa_secret_pending", None)
+            st.session_state.pop("staff_2fa_failures", None)
+            st.session_state["login_password"] = ""
+            st.rerun()
+        return False
 
     ui_theme.render_login_header()
     col1, col2, col3 = st.columns([1, 1.5, 1])
