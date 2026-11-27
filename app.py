@@ -901,13 +901,17 @@ def _render_staff_account_recovery():
     if verify:
         username, role = auth_security.identify_recovery_code("database.db", recovery_code)
         if username and len(totp_code.strip()) == 6 and totp_code.strip().isdigit() and auth_security.verify_totp("database.db", username, totp_code.strip()):
-            st.session_state["staff_recovery_verified"] = {"username": username, "role": role, "code": recovery_code}
+            st.session_state["staff_recovery_verified"] = {"username": username, "role": role, "code": recovery_code, "verified_at": time.time()}
             st.success("Verification successful. Set a new username and password below.")
             st.rerun()
         else:
             st.error("Recovery code or authenticator code is invalid.")
             log_event("database.db", "staff-recovery", "STAFF_RECOVERY_FAILED", "Invalid recovery code or TOTP.")
     verified = st.session_state.get("staff_recovery_verified")
+    if verified and time.time() - verified.get("verified_at", 0) > 300:
+        st.session_state.pop("staff_recovery_verified", None)
+        verified = None
+        st.warning("Recovery verification expired after 5 minutes. Please verify your recovery code and authenticator again.")
     if verified:
         with st.form("staff_recovery_reset_form"):
             new_username = st.text_input("New username", max_chars=40)
