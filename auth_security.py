@@ -9,6 +9,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import smtplib
 import sqlite3
 import ssl
