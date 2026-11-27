@@ -7,6 +7,7 @@ Required secrets:
 """
 import hashlib
 import io
+import logging
 import os
 import smtplib
 import sqlite3
@@ -316,32 +317,73 @@ def get_staff_by_recovery_email(db_path, email):
     return (row[0], row[1]) if row else (None, None)
 
 
-def send_recovery_email_code(email, code):
-    """Send a short-lived sign-in/enrollment verification code using configured SMTP."""
+def _send_configured_smtp_message(message):
+    """Send through Gmail-compatible implicit TLS (465) or STARTTLS (587)."""
     host = _setting("SMTP_HOST").strip()
+    smtp_user = _setting("SMTP_USERNAME").strip()
+    smtp_password = _setting("SMTP_PASSWORD").strip()
+    sender = _setting("SMTP_FROM_EMAIL", smtp_user).strip()
+    missing = [
+        name for name, value in (
+            ("SMTP_HOST", host), ("SMTP_USERNAME", smtp_user),
+            ("SMTP_PASSWORD", smtp_password), ("SMTP_FROM_EMAIL", sender),
+        ) if not value
+    ]
+    if missing:
+        logging.getLogger(__name__).error(
+            "SMTP delivery not configured; missing settings: %s", ", ".join(missing)
+        )
+        return False
     try:
         port = int(_setting("SMTP_PORT", "465") or "465")
-    except (TypeError, ValueError):
+        context = ssl.create_default_context()
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, context=context, timeout=15) as server:
+                server.login(smtp_user, smtp_password)
+                server.send_message(message)
+        elif port == 587:
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.ehlo()
+                server.starttls(context=context)
+                server.ehlo()
+                server.login(smtp_user, smtp_password)
+                server.send_message(message)
+        else:
+            logging.getLogger(__name__).error(
+                "SMTP delivery failed: unsupported SMTP port %s (use 465 or 587).", port
+            )
+            return False
+        return True
+    except (smtplib.SMTPException, OSError, ssl.SSLError, ValueError) as exc:
+        # Log only the exception class; never log credentials or message contents.
+        logging.getLogger(__name__).error(
+            "SMTP delivery failed (%s). Check host, port, Gmail App Password and sender settings.",
+            type(exc).__name__,
+        )
         return False
-    smtp_user = _setting("SMTP_USERNAME").strip()
-    smtp_password = _setting("SMTP_PASSWORD")
-    sender = _setting("SMTP_FROM_EMAIL", smtp_user).strip()
-    if not all((host, smtp_user, smtp_password, sender, email)):
-        return False
+
+
+def send_recovery_email_code(email, code):
+    """Send a short-lived sign-in/enrollment verification code using configured SMTP."""
     message = EmailMessage()
     message["Subject"] = "Government AI Platform - verification code"
-    message["From"] = sender
+    message["From"] = _setting("SMTP_FROM_EMAIL", _setting("SMTP_USERNAME")).strip()
     message["To"] = str(email).strip()
     message.set_content(
-        f"Your Government AI Platform verification code is: {code}\n\n"
+        f"Your Government AI Platform verification code is: {code}\\n\\n"
         "This code expires in 10 minutes. If you did not request it, ignore this email. "
         "Never share this code with anyone."
     )
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(host, port, context=context, timeout=12) as server:
-            server.login(smtp_user, smtp_password)
-            server.send_message(message)
-        return True
-    except Exception:
-        return False
+    return _send_configured_smtp_message(message)
+
+
+def send_smtp_test_email(email):
+    """Send a harmless SMTP diagnostic message to an admin-supplied address."""
+    message = EmailMessage()
+    message["Subject"] = "Government AI Platform - SMTP test"
+    message["From"] = _setting("SMTP_FROM_EMAIL", _setting("SMTP_USERNAME")).strip()
+    message["To"] = str(email).strip()
+    message.set_content(
+        "SMTP test successful. Your Government AI Platform email delivery settings are working."
+    )
+    return _send_configured_smtp_message(message)
