@@ -1146,6 +1146,7 @@ def render_admin_dashboard(db_path: str):
     @st.fragment(run_every=15)
     def live():
         import plotly.express as px
+        st.caption("Live refresh: 15 seconds. Search charts store extracted keywords only, not full prompts or attachments.")
         period = st.selectbox("Report period", ["Daily", "Monthly", "Yearly"], key="analytics_period")
         interval = {"Daily":"-30 days","Monthly":"-365 days","Yearly":"-5 years"}[period]
         con=sqlite3.connect(db_path)
