@@ -1845,7 +1845,7 @@ def _show_product_tour(db_path, username, role):
                 P.location.origin + '/app/static/avatar.jpg'
               ];
               let avatarSourceIndex=0;
-              avatarImage.onload=function(){avatarReady=true;};
+              avatarImage.onload=function(){avatarReady=true;if(!avatarRaf)avatarRaf=P.requestAnimationFrame(drawRavanaFrame);};
               avatarImage.onerror=function(){
                 avatarSourceIndex++;
                 if(avatarSourceIndex<avatarSources.length) avatarImage.src=avatarSources[avatarSourceIndex];
@@ -1853,7 +1853,8 @@ def _show_product_tour(db_path, username, role):
               };
               avatarImage.src=avatarSources[0];
               function drawRavanaFrame(now){
-                if(!avatarCtx || !avatarReady)return;
+                if(!avatarCtx)return;
+                if(!avatarReady){avatarRaf=P.requestAnimationFrame(drawRavanaFrame);return;}
                 avatarCtx.clearRect(0,0,720,720);
                 avatarCtx.drawImage(avatarImage,0,0,720,720);
                 const blinkCycle=(now%5000)/5000;
@@ -1880,8 +1881,8 @@ def _show_product_tour(db_path, username, role):
                   avatarCtx.fillStyle='rgb(120,40,48)';
                   avatarCtx.beginPath();avatarCtx.ellipse(354,541+dy-5,13,6,0,0,Math.PI*2);avatarCtx.fill();
                 }
-                if(avatarSpeaking || avatarMouth>.035 || blink>0) avatarRaf=P.requestAnimationFrame(drawRavanaFrame);
-                else avatarRaf=0;
+                // Keep the frame loop alive so natural blinking continues even between speech steps.
+                avatarRaf=P.requestAnimationFrame(drawRavanaFrame);
               }
               function startRavanaAnimation(){
                 avatarSpeaking=true;
