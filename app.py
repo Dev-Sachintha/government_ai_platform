@@ -1253,6 +1253,16 @@ def main():
 
         @st.fragment(run_every=1 if _busy else 10)
         def _ticker():
+            auth_check = sqlite3.connect(db_path)
+            try:
+                active_row = auth_check.execute(
+                    "SELECT active, role FROM app_users WHERE username = ? COLLATE NOCASE LIMIT 1",
+                    (username,),
+                ).fetchone()
+            finally:
+                auth_check.close()
+            if not active_row or not active_row[0] or active_row[1] != user_role:
+                st.rerun()
             update_user_presence(db_path, _presence_id, username, user_role)
             if client_ts := st.query_params.get("user_active_ts"):     # activity reported by the browser
                 if client_ts != st.session_state.get("client_last_active_ts", 0):
