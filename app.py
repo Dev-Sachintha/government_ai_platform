@@ -1811,7 +1811,11 @@ def _show_product_tour(db_path, username, role):
         "<button id='tourReplay' style='border:0;border-radius:22px;padding:9px 16px;"
         "background:#5146d8;color:white;font-weight:600;cursor:pointer'>🔊 Replay Ravana's explanation</button>"
         "<span id='tourVoiceStatus' style='margin-left:9px;font:12px Arial,sans-serif'></span>"
-        "<script>" + avatar_script + r"""
+        "<div id='tourRavana' style='display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 18px;width:fit-content;max-width:100%;border-radius:55px;background:radial-gradient(circle at 25% 50%,#fff 0 28%,transparent 29%),radial-gradient(circle at 42% 35%,#fff 0 34%,transparent 35%),radial-gradient(circle at 68% 38%,#fff 0 34%,transparent 35%),radial-gradient(circle at 82% 55%,#fff 0 25%,transparent 26%),linear-gradient(180deg,#fff,#eaf3ff);box-shadow:0 8px 22px rgba(50,70,130,.18);animation:tourCloudFloat 3.4s ease-in-out infinite;position:relative;z-index:5'>"
+        "<img id='tourRavanaFace' alt='Ravana avatar' style='width:82px;height:82px;object-fit:cover;object-position:center;border-radius:50%;border:4px solid white;box-shadow:0 4px 14px #7894b966'/>"
+        "<div style='font:700 13px Arial;color:#24324b;min-width:105px'><div>☁️ Ravana</div><div id='tourRavanaState' style='font-size:11px;color:#5265dc;margin-top:5px'>Ready to guide you</div></div></div>"
+        "<style>@keyframes tourCloudFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}@keyframes tourTalk{0%,100%{transform:scale(1)}50%{transform:scale(1.055)}}#tourRavana.talking #tourRavanaFace{animation:tourTalk .28s ease-in-out infinite alternate}#tourRavana.talking{box-shadow:0 8px 26px rgba(79,70,229,.28)}</style>"
+        "<script>" + r"""
         (function(){
           const P=(function(){try{return window.parent&&window.parent.document?window.parent:window;}catch(e){return window;}})();
           const text=__TOUR_TEXT__, target=__TOUR_TAB__;
@@ -1830,26 +1834,15 @@ def _show_product_tour(db_path, username, role):
               if(!P.speechSynthesis||!P.SpeechSynthesisUtterance){status.textContent='English speech is not supported in this browser.';return;}
               P.speechSynthesis.cancel();
               P.__govSession=(P.__govSession||0)+1;
-              const avatar=getAvatar();
-              // Keep Ravana INSIDE the Streamlit tour dialog so it is visible
-              // above the modal surface instead of being hidden behind its overlay.
-              const avatarNode=P.document.getElementById('gov-avatar');
-              const tourDialog=P.document.querySelector('[role="dialog"]');
-              if(avatarNode && tourDialog){
-                const dialogStyle=P.getComputedStyle(tourDialog);
-                if(dialogStyle.position==='static') tourDialog.style.position='relative';
-                if(avatarNode.parentElement!==tourDialog) tourDialog.appendChild(avatarNode);
-                avatarNode.style.setProperty('position','absolute','important');
-                avatarNode.style.setProperty('right','20px','important');
-                avatarNode.style.setProperty('bottom','68px','important');
-                avatarNode.style.setProperty('top','auto','important');
-                avatarNode.style.setProperty('left','auto','important');
-                avatarNode.style.setProperty('width','clamp(138px,18vw,188px)','important');
-                avatarNode.style.setProperty('z-index','1000000','important');
-                avatarNode.style.setProperty('pointer-events','auto','important');
-                avatarNode.style.setProperty('animation','govCloudFloat 3.2s ease-in-out infinite','important');
-                avatarNode.style.setProperty('filter','drop-shadow(0 10px 18px rgba(35,60,110,.28))','important');
-              }
+              const avatarPanel=document.getElementById('tourRavana');
+              const avatarState=document.getElementById('tourRavanaState');
+              const avatarFace=document.getElementById('tourRavanaFace');
+              if(avatarFace && !avatarFace.src) avatarFace.src=P.location.origin + '/app/static/avatar.jpg';
+              const avatar={
+                start:function(){if(avatarPanel)avatarPanel.classList.add('talking');if(avatarState)avatarState.textContent='Speaking English…';},
+                pulse:function(){if(avatarPanel){avatarPanel.classList.add('talking');}},
+                stop:function(){if(avatarPanel)avatarPanel.classList.remove('talking');if(avatarState)avatarState.textContent='Ready to guide you';}
+              };
               avatar.start();
               const utterance=new P.SpeechSynthesisUtterance(text);
               utterance.lang='en-US'; utterance.rate=0.94; utterance.pitch=0.95;
@@ -1869,7 +1862,7 @@ def _show_product_tour(db_path, username, role):
         </script></body></html>
         """.replace("__TOUR_TEXT__", speech_text).replace("__TOUR_TAB__", tab_text)
     )
-    components.html(tour_html, height=58)
+    components.html(tour_html, height=180)
 
     st.divider()
     a,b,c=st.columns(3)
