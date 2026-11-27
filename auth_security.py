@@ -176,3 +176,83 @@ def send_security_alert(event, username, details):
         return True
     except Exception:
         return False
+
+
+def _recovery_code_hash(code):
+    return hashlib.sha256(("govai-staff-recovery:" + str(code).strip().upper()).encode("utf-8")).hexdigest()
+
+
+def ensure_recovery_table(db_path):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS staff_recovery_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL COLLATE NOCASE,
+                code_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                used_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_recovery_username ON staff_recovery_codes(username)")
+
+
+def generate_recovery_codes(db_path, username, count=10):
+    """Replace a staff member's previous recovery codes and return new plaintext codes once."""
+    import secrets
+    ensure_recovery_table(db_path)
+    codes = [secrets.token_hex(8).upper() for _ in range(count)]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM staff_recovery_codes WHERE username=? COLLATE NOCASE", (username,))
+        conn.executemany(
+            "INSERT INTO staff_recovery_codes(username, code_hash) VALUES (?, ?)",
+            [(username, _recovery_code_hash(code)) for code in codes],
+        )
+    return codes
+
+
+def identify_recovery_code(db_path, code):
+    ensure_recovery_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT r.username, u.role FROM staff_recovery_codes r
+               JOIN app_users u ON u.username = r.username COLLATE NOCASE
+               WHERE r.code_hash=? AND r.used_at IS NULL AND u.active=1
+                 AND u.role IN ('admin','analyst') LIMIT 1""",
+            (_recovery_code_hash(code),),
+        ).fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def consume_recovery_code_and_update(db_path, code, new_username, password_hash, password_salt):
+    """Atomically consume a valid recovery code and update the same active staff account."""
+    ensure_recovery_table(db_path)
+    digest = _recovery_code_hash(code)
+    with sqlite3.connect(db_path, timeout=10) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT r.id, r.username FROM staff_recovery_codes r
+               JOIN app_users u ON u.username = r.username COLLATE NOCASE
+               WHERE r.code_hash=? AND r.used_at IS NULL AND u.active=1
+                 AND u.role IN ('admin','analyst') LIMIT 1""",
+            (digest,),
+        ).fetchone()
+        if not row:
+            conn.rollback()
+            return False, "Recovery code is invalid or has already been used."
+        old_username = row[1]
+        try:
+            conn.execute(
+                "UPDATE app_users SET username=?, password_hash=?, password_salt=? WHERE username=? COLLATE NOCASE AND active=1 AND role IN ('admin','analyst')",
+                (new_username, password_hash, password_salt, old_username),
+            )
+            if conn.total_changes < 1:
+                conn.rollback()
+                return False, "The staff account could not be updated."
+            conn.execute("UPDATE staff_security SET username=?, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE", (new_username, old_username))
+            conn.execute("UPDATE staff_recovery_codes SET used_at=CURRENT_TIMESTAMP WHERE id=?", (row[0],))
+            conn.execute("DELETE FROM staff_recovery_codes WHERE username=? COLLATE NOCASE AND id<>?", (old_username, row[0]))
+            conn.commit()
+            return True, old_username
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return False, "That username is already taken."
