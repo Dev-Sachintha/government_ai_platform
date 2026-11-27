@@ -974,6 +974,99 @@ def _render_staff_account_recovery():
     if st.session_state.pop("staff_recovery_success", False):
         st.success("Account updated. Sign in with your new username and password. Save the new recovery codes shown after login.")
 
+
+def _email_code_digest(email, code):
+    return hashlib.sha256(("govai-email-login:" + str(email).strip().lower() + ":" + str(code).strip()).encode()).hexdigest()
+
+def _render_staff_recovery_email_setup(db_path, username):
+    with st.expander("📧 Recovery Email Setup"):
+        st.caption("Verify an email address to sign in later without remembering your username or password.")
+        email = st.text_input("Recovery email address", key="staff_recovery_email_input").strip().lower()
+        if st.button("Send email verification code", key="staff_send_email_verify"):
+            if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+                st.error("Enter a valid email address.")
+            else:
+                code = f"{secrets.randbelow(1000000):06d}"
+                if auth_security.send_recovery_email_code(email, code):
+                    st.session_state["staff_email_setup_pending"] = {"email": email, "digest": _email_code_digest(email, code), "expires": time.time() + 600, "username": username}
+                    st.success("Verification code sent. Check your inbox and spam folder.")
+                else:
+                    st.error("Email could not be sent. Check SMTP settings in Streamlit Cloud Secrets.")
+        pending = st.session_state.get("staff_email_setup_pending")
+        if pending and pending.get("username", "").lower() == username.lower():
+            if time.time() > pending.get("expires", 0):
+                st.session_state.pop("staff_email_setup_pending", None)
+                st.warning("Email verification code expired. Request a new one.")
+            else:
+                with st.form("staff_email_setup_verify_form"):
+                    code = st.text_input("Email verification code", max_chars=6, placeholder="000000")
+                    current_totp = st.text_input("Current Authenticator code", max_chars=6, placeholder="000000")
+                    submitted = st.form_submit_button("Verify and save recovery email", type="primary")
+                if submitted:
+                    valid_email_code = len(code.strip()) == 6 and hmac.compare_digest(_email_code_digest(pending["email"], code.strip()), pending["digest"])
+                    valid_totp = len(current_totp.strip()) == 6 and current_totp.strip().isdigit() and auth_security.verify_totp(db_path, username, current_totp.strip())
+                    if valid_email_code and valid_totp and time.time() <= pending["expires"]:
+                        auth_security.set_recovery_email(db_path, username, pending["email"])
+                        st.session_state.pop("staff_email_setup_pending", None)
+                        log_event(db_path, username, "STAFF_RECOVERY_EMAIL_VERIFIED", "Recovery email verified and saved.")
+                        save_now()
+                        st.success("Recovery email verified and saved.")
+                        st.rerun()
+                    else:
+                        st.error("Email code or authenticator code is invalid or expired.")
+
+def _render_staff_alternative_login():
+    st.subheader("🔐 Try another option")
+    st.caption("Use your previously verified recovery email, then choose Authenticator or Email code.")
+    email = st.text_input("Verified recovery email", key="alternative_login_email").strip().lower()
+    method = st.radio("Verification method", ["Authenticator app (6-digit code)", "Recovery email (one-time code)"], key="alternative_login_method")
+    if method.startswith("Authenticator"):
+        with st.form("alternative_totp_login_form"):
+            code = st.text_input("6-digit Authenticator code", max_chars=6, placeholder="000000")
+            submitted = st.form_submit_button("Verify and sign in", type="primary")
+        if submitted:
+            username, role = auth_security.get_staff_by_recovery_email("database.db", email)
+            valid = bool(username and len(code.strip()) == 6 and code.strip().isdigit() and auth_security.verify_totp("database.db", username, code.strip()))
+            if valid:
+                _finish_staff_login(username, role)
+                log_event("database.db", username, "LOGIN_RECOVERY_EMAIL_TOTP", "Signed in using verified recovery email and authenticator code.")
+                st.rerun()
+            else:
+                st.error("Email or authenticator code is invalid.")
+    else:
+        if st.button("Send one-time code to my recovery email", key="alternative_send_email_code"):
+            username, role = auth_security.get_staff_by_recovery_email("database.db", email)
+            if username:
+                code = f"{secrets.randbelow(1000000):06d}"
+                if auth_security.send_recovery_email_code(email, code):
+                    st.session_state["alternative_email_otp"] = {"email": email, "username": username, "role": role, "digest": _email_code_digest(email, code), "expires": time.time() + 600, "attempts": 0}
+                    st.success("If this address is registered, a one-time code has been sent. Check your inbox and spam folder.")
+                else:
+                    st.error("Email delivery is unavailable. Please contact the platform administrator.")
+            else:
+                st.info("If this address is registered, a one-time code has been sent.")
+        pending = st.session_state.get("alternative_email_otp")
+        if pending and pending.get("email") == email:
+            if time.time() > pending.get("expires", 0):
+                st.session_state.pop("alternative_email_otp", None)
+                st.warning("Code expired. Request a new one.")
+            else:
+                with st.form("alternative_email_otp_form"):
+                    code = st.text_input("Email one-time code", max_chars=6, placeholder="000000")
+                    verify = st.form_submit_button("Verify and sign in", type="primary")
+                if verify:
+                    valid = len(code.strip()) == 6 and hmac.compare_digest(_email_code_digest(email, code.strip()), pending["digest"]) and time.time() <= pending["expires"] and pending["attempts"] < 5
+                    if valid:
+                        st.session_state.pop("alternative_email_otp", None)
+                        _finish_staff_login(pending["username"], pending["role"])
+                        log_event("database.db", pending["username"], "LOGIN_RECOVERY_EMAIL_OTP", "Signed in using verified recovery email one-time code.")
+                        st.rerun()
+                    else:
+                        pending["attempts"] += 1
+                        if pending["attempts"] >= 5:
+                            st.session_state.pop("alternative_email_otp", None)
+                        st.error("Invalid or expired email code.")
+
 def check_password():
     if st.session_state.get("auth_timeout_expired", False):
         st.warning("⚠️ Your session expired due to inactivity. Please log in again.")
@@ -1125,8 +1218,8 @@ def check_password():
             st.form_submit_button("Login", on_click=password_entered, type="primary")
             if st.session_state.get("auth_error", False):
                 st.error(st.session_state.get("auth_error_message", "😕 Invalid username or password."))
-        with st.expander("Forgot Username / Password?"):
-            _render_staff_account_recovery()
+        with st.expander("Try another option"):
+            _render_staff_alternative_login()
     return False
 
 
@@ -1166,6 +1259,7 @@ def render_sidebar_controls(db_path, user_role):
         if user_role in ("admin", "analyst"):
             _show_staff_recovery_codes()
             _render_staff_recovery_management(db_path, username)
+            _render_staff_recovery_email_setup(db_path, username)
         if user_role in ("admin", "analyst"):
             if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
                 st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
