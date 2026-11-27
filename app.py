@@ -1221,10 +1221,13 @@ def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
         username = st.session_state.get("current_user", "User")
         render_sidebar_threads(db_path, username)
-        if user_role in ("admin", "analyst"):
-            _show_staff_recovery_codes()
-            _render_staff_recovery_management(db_path, username)
-            _render_staff_recovery_email_setup(db_path, username)
+        # Every account is required to enroll in 2FA. All roles must be able to
+        # view their one-time recovery codes and manage their verified recovery email.
+        _show_staff_recovery_codes()
+        _render_staff_recovery_management(db_path, username)
+        _render_staff_recovery_email_setup(db_path, username)
+
+        # Monitoring controls remain restricted to Admin and Analyst.
         if user_role in ("admin", "analyst"):
             if st.button("🖥️ Screen Monitor", use_container_width=True, key="sidebar_screen_monitor"):
                 st.session_state["show_screen_monitor_panel"] = not st.session_state.get("show_screen_monitor_panel", False)
