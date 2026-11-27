@@ -16,6 +16,7 @@ import html
 import streamlit as st
 import persist
 import auth_security
+import phone_2fa
 import ui_theme
 from streamlit_autorefresh import st_autorefresh
 
@@ -1322,6 +1323,7 @@ def render_sidebar_controls(db_path, user_role):
         _show_staff_recovery_codes()
         _render_staff_recovery_management(db_path, username)
         _render_staff_recovery_email_setup(db_path, username)
+        _render_phone_2fa_setup(db_path, username)
 
         # Monitoring controls remain restricted to Admin and Analyst.
         if user_role in ("admin", "analyst"):
