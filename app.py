@@ -896,53 +896,6 @@ def _finish_staff_login(username: str, role: str) -> None:
 def _email_code_digest(email, code):
     return hashlib.sha256(("govai-email-login:" + str(email).strip().lower() + ":" + str(code).strip()).encode()).hexdigest()
 
-def _render_phone_2fa_setup(db_path, username):
-    """Let any authenticated account enroll or replace a verified SMS/voice factor."""
-    with st.expander("📱 SMS / Voice Call 2FA"):
-        st.caption("Add a verified phone number. During future sign-ins you can receive a code by SMS or automated voice call.")
-        if not auth_security.phone_factor_enabled(db_path, username):
-            st.info("Phone verification is not configured for this account yet.")
-        phone = st.text_input(
-            "Phone number (international format)",
-            placeholder="+94771234567",
-            key="phone_2fa_number",
-            help="Use E.164 format: + followed by country code and number.",
-        ).strip()
-        channel_label = st.radio("Send verification by", ["Text message (SMS)", "Voice call"], horizontal=True, key="phone_2fa_channel")
-        if st.button("Send phone verification code", key="phone_2fa_send"):
-            if not re.fullmatch(r"\+[1-9]\d{7,14}", phone):
-                st.error("Enter a valid international phone number, for example +94771234567.")
-            else:
-                channel = "sms" if channel_label.startswith("Text") else "call"
-                ok, message = auth_security.send_phone_verification(phone, channel)
-                if ok:
-                    st.session_state["phone_2fa_pending"] = {
-                        "username": username, "phone": phone, "expires": time.time() + 600
-                    }
-                    st.success(message + " It expires in 10 minutes.")
-                else:
-                    st.error(message)
-        pending_phone = st.session_state.get("phone_2fa_pending")
-        if pending_phone and pending_phone.get("username", "").casefold() == username.casefold():
-            if time.time() > pending_phone.get("expires", 0):
-                st.session_state.pop("phone_2fa_pending", None)
-                st.warning("Phone code expired. Request a new one.")
-            else:
-                with st.form("phone_2fa_verify_form"):
-                    phone_code = st.text_input("Phone verification code", max_chars=10)
-                    verified = st.form_submit_button("Verify and save phone", type="primary")
-                if verified:
-                    if auth_security.verify_phone_code(pending_phone["phone"], phone_code):
-                        auth_security.set_verified_phone(db_path, username, pending_phone["phone"])
-                        st.session_state.pop("phone_2fa_pending", None)
-                        log_event(db_path, username, "PHONE_2FA_ENABLED", "A phone number was verified for SMS/voice sign-in.")
-                        save_now()
-                        st.success("Phone number verified. SMS and voice-call login options are now available.")
-                        st.rerun()
-                    else:
-                        st.error("Phone code is invalid or expired. Check the code and try again.")
-        st.caption("Provider setup: add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_VERIFY_SERVICE_SID to Streamlit Cloud → Settings → Secrets. Keep these values private.")
-
 
 def _render_staff_recovery_email_setup(db_path, username):
     with st.expander("📧 Recovery Email Setup"):
@@ -1176,32 +1129,12 @@ def check_password():
         verification_method = "Authenticator app"
         if pending["mode"] == "verify":
             verification_options = ["Authenticator app", "Backup Code"]
-            if auth_security.phone_factor_enabled("database.db", username):
-                verification_options.extend(["SMS text message", "Voice call"])
             verification_method = st.radio(
                 "Choose a verification method",
                 verification_options,
                 horizontal=False,
                 key="login_2fa_method",
             )
-            if verification_method in ("SMS text message", "Voice call"):
-                phone_conn = sqlite3.connect("database.db")
-                try:
-                    phone_row = phone_conn.execute(
-                        "SELECT phone_number FROM staff_security WHERE username=? COLLATE NOCASE AND phone_verified=1 AND enabled=1",
-                        (username,),
-                    ).fetchone()
-                finally:
-                    phone_conn.close()
-                verified_phone = phone_row[0] if phone_row else ""
-                if st.button("Send code by " + ("SMS" if verification_method == "SMS text message" else "voice call"), key="login_phone_otp_send"):
-                    channel = "sms" if verification_method == "SMS text message" else "call"
-                    sent, message = auth_security.send_phone_verification(verified_phone, channel)
-                    if sent:
-                        st.session_state["login_phone_otp_sent_at"] = time.time()
-                        st.success(message + " Enter the code below.")
-                    else:
-                        st.error(message)
         else:
             st.write(f"Set up Authenticator 2FA for **{username}** using the 6-digit code.")
         code_max = 8 if verification_method == "Backup Code" else 10
@@ -1220,16 +1153,6 @@ def check_password():
             elif pending["mode"] == "verify":
                 if verification_method == "Backup Code":
                     valid = auth_security.consume_backup_code("database.db", username, code.strip())
-                elif verification_method in ("SMS text message", "Voice call"):
-                    phone_conn = sqlite3.connect("database.db")
-                    try:
-                        phone_row = phone_conn.execute(
-                            "SELECT phone_number FROM staff_security WHERE username=? COLLATE NOCASE AND phone_verified=1 AND enabled=1",
-                            (username,),
-                        ).fetchone()
-                    finally:
-                        phone_conn.close()
-                    valid = bool(phone_row and auth_security.verify_phone_code(phone_row[0], code.strip()))
                 elif len(code.strip()) == 6 and code.strip().isdigit():
                     totp_status = auth_security.verify_totp_detailed("database.db", username, code.strip())
                     valid = totp_status == "valid"
@@ -1322,7 +1245,6 @@ def render_sidebar_controls(db_path, user_role):
         _show_staff_recovery_codes()
         _render_staff_recovery_management(db_path, username)
         _render_staff_recovery_email_setup(db_path, username)
-        _render_phone_2fa_setup(db_path, username)
 
         # Monitoring controls remain restricted to Admin and Analyst.
         if user_role in ("admin", "analyst"):
