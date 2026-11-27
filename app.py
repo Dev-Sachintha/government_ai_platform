@@ -1830,14 +1830,34 @@ def _show_product_tour(db_path, username, role):
               if(!P.speechSynthesis||!P.SpeechSynthesisUtterance){status.textContent='English speech is not supported in this browser.';return;}
               P.speechSynthesis.cancel();
               P.__govSession=(P.__govSession||0)+1;
-              const avatar=getAvatar(); avatar.start();
+              const avatar=getAvatar();
+              // Keep Ravana INSIDE the Streamlit tour dialog so it is visible
+              // above the modal surface instead of being hidden behind its overlay.
+              const avatarNode=P.document.getElementById('gov-avatar');
+              const tourDialog=P.document.querySelector('[role="dialog"]');
+              if(avatarNode && tourDialog){
+                const dialogStyle=P.getComputedStyle(tourDialog);
+                if(dialogStyle.position==='static') tourDialog.style.position='relative';
+                if(avatarNode.parentElement!==tourDialog) tourDialog.appendChild(avatarNode);
+                avatarNode.style.setProperty('position','absolute','important');
+                avatarNode.style.setProperty('right','20px','important');
+                avatarNode.style.setProperty('bottom','68px','important');
+                avatarNode.style.setProperty('top','auto','important');
+                avatarNode.style.setProperty('left','auto','important');
+                avatarNode.style.setProperty('width','clamp(138px,18vw,188px)','important');
+                avatarNode.style.setProperty('z-index','1000000','important');
+                avatarNode.style.setProperty('pointer-events','auto','important');
+                avatarNode.style.setProperty('animation','govCloudFloat 3.2s ease-in-out infinite','important');
+                avatarNode.style.setProperty('filter','drop-shadow(0 10px 18px rgba(35,60,110,.28))','important');
+              }
+              avatar.start();
               const utterance=new P.SpeechSynthesisUtterance(text);
               utterance.lang='en-US'; utterance.rate=0.94; utterance.pitch=0.95;
               utterance.onboundary=function(){avatar.pulse();};
               utterance.onend=function(){avatar.stop();status.textContent='';};
               utterance.onerror=function(){avatar.stop();status.textContent='Speech could not start. Press Replay to try again.';};
               P.speechSynthesis.speak(utterance);
-              status.textContent='Ravana is explaining…';
+              status.textContent='☁️ Ravana is speaking inside the tour…';
             }catch(e){status.textContent='Press Replay to hear the explanation.';}
           }
           document.getElementById('tourReplay').addEventListener('click',speak);
