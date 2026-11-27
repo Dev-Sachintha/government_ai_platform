@@ -141,6 +141,19 @@ def log_event(db_path: str, username: str, action: str, details: str = "") -> No
                 "INSERT INTO audit_logs (username, action, details) VALUES (?, ?, ?);",
                 (username, action, details),
             )
+            # Mirror action names only into analytics; keep audit details/SQL private.
+            try:
+                role_row = conn.execute(
+                    "SELECT role FROM app_users WHERE username = ? COLLATE NOCASE LIMIT 1",
+                    (username,),
+                ).fetchone()
+                role = role_row[0] if role_row else "unknown"
+                conn.execute(
+                    "INSERT INTO usage_events (username, role, event_type, details) VALUES (?, ?, ?, '')",
+                    (str(username)[:100], str(role)[:20], str(action)[:40]),
+                )
+            except sqlite3.Error:
+                pass
             conn.commit()
         finally:
             conn.close()
