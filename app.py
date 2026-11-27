@@ -6,6 +6,7 @@ import time
 import hashlib
 import secrets
 import streamlit.components.v1 as components
+from avatar_js import AVATAR_JS
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import sqlite3
@@ -1705,27 +1706,150 @@ def _finish_tour(db_path, username):
         conn.close()
 
 
-@st.dialog("👋 Government AI Platform — Quick Tour", width="large")
+@st.dialog("👋 Government AI Platform — Interactive Tour", width="large")
 def _show_product_tour(db_path, username, role):
+    """Step-by-step tour: open the matching tab and narrate each feature in English."""
     staff = role in ("admin", "analyst")
     steps = [
-        ("Welcome to your AI Workspace", "This guided tour introduces the main areas. Use Next and Back, or Skip Tour at any time."),
-        ("💬 AI Workspace & Chat", "Ask questions and work with the AI assistant. Your chat history is available in the sidebar."),
-        ("📷 Scan", "Open Scan to use the available camera, upload, scanning and AI tools."),
-        ("🖐️ HoloMotion 3D", "Open HoloMotion 3D to explore gesture and 3D interaction features"),
+        {
+            "title": "Welcome to your AI Workspace",
+            "description": "Welcome to Government AI Platform. This guided tour will open each available section and explain what you can do there. Use Next to continue.",
+            "tab": None,
+            "speech": "Welcome to Government AI Platform. I am Ravana, your guide. I will show you the main features and explain how to use each one. Select Next to begin."
+        },
+        {
+            "title": "💬 AI Workspace & Chat",
+            "description": "This is your main AI assistant. Ask questions, request explanations, draft documents, analyse information and continue previous conversations from your chat history. Use the message box to ask a question.",
+            "tab": "AI Workspace & Chat",
+            "speech": "This is the AI Workspace and Chat. Type a question in the message box and send it to the AI assistant. You can ask for explanations, help with documents, research and analysis. Your previous conversations can be opened from the chat history."
+        },
+        {
+            "title": "📷 Scan",
+            "description": "Open Scan to take a photo with your camera or upload an image. The AI can identify the main object and provide information. Available scanning tools depend on your account permissions.",
+            "tab": "Scan",
+            "speech": "This is the Scan section. You can take a photo using your camera or upload an image. Press Scan to let the AI examine the image and identify the object or provide useful information. Please allow camera access when your browser asks."
+        },
+        {
+            "title": "🖐️ HoloMotion 3D",
+            "description": "Use HoloMotion 3D to explore interactive 3D models and gesture-based controls. Launch the viewer, allow camera access if you want hand tracking, and load a supported 3D model.",
+            "tab": "HoloMotion 3D",
+            "speech": "This is HoloMotion 3D. Press Launch to open the interactive three dimensional viewer. You can enable your camera and use hand gestures to interact with the model. You can also add a supported three dimensional model file."
+        },
     ]
     if staff:
         steps += [
-            ("🗂️ Staff tools", "Website Sources, Image & PDF Library, Database Workbench and User Management are additional tools. Access depends on your role."),
-            ("🖥️ Monitoring", "Screen Monitor, Mobile Phone Monitor and PC System Monitoring provide monitoring tools available to staff roles"),
+            {
+                "title": "🌐 Website Sources",
+                "description": "Manage trusted websites and sources that the AI can use when answering questions. Add a website URL, refresh its content or remove a source when it is no longer needed.",
+                "tab": "Website Sources",
+                "speech": "This is Website Sources. Staff can add trusted website addresses for the platform to collect and search information from. You can refresh a source to update its content or remove it when it is no longer required."
+            },
+            {
+                "title": "🖼️ Image & PDF Library",
+                "description": "Upload and manage reference images and PDF documents. The AI can search indexed document content to help answer related questions.",
+                "tab": "Image & PDF Library",
+                "speech": "This is the Image and PDF Library. You can upload reference pictures and PDF documents here. After the documents are indexed, the AI can search their content and use relevant information when answering questions."
+            },
+            {
+                "title": "📊 Database Workbench",
+                "description": "Administrators can run read-only SELECT queries to inspect platform data. Only safe read-only queries are allowed.",
+                "tab": "Database Workbench",
+                "speech": "This is the Database Workbench. Administrators can inspect platform data by running read only select queries. Data-changing commands are not allowed here. Review your query carefully before running it."
+            },
+            {
+                "title": "👥 User Management",
+                "description": "Create accounts, choose their roles and manage account access. The actions available depend on whether you are an Admin or Analyst.",
+                "tab": "User Management",
+                "speech": "This is User Management. Admins and Analysts can create accounts and manage permitted user access. Choose a username, set a temporary password and select an allowed role. Give the temporary password to the account owner securely."
+            },
+            {
+                "title": "🖥️ Screen Monitor",
+                "description": "View computers that have explicitly chosen to share their screen. Screen sharing starts only after the device owner approves the browser permission prompt.",
+                "tab": "Screen Monitor",
+                "speech": "This is Screen Monitor. It lets authorized staff view computers that have chosen to share their screens. Screen capture is not started secretly. The person using the computer must open the sharing page, choose a screen and approve the browser permission."
+            },
+            {
+                "title": "📱 Mobile Phone Monitor",
+                "description": "View paired Android devices that have explicitly started screen sharing. The phone owner must approve Android's screen-capture permission and can stop sharing at any time.",
+                "tab": "Mobile Phone Monitor",
+                "speech": "This is Mobile Phone Monitor. Authorized staff can view paired Android devices only while the phone owner has started screen sharing and approved Android's system permission. The owner can stop sharing whenever they want."
+            },
+            {
+                "title": "📈 PC System Monitoring",
+                "description": "Review telemetry shared by an installed PC agent, such as CPU, memory, disk, network and supported system information. The agent must be configured and running on the computer.",
+                "tab": "PC System Monitoring",
+                "speech": "This is PC System Monitoring. It displays system information shared by a configured computer agent, such as processor usage, memory, disk and network activity. The agent must be installed and running on a computer whose owner has agreed to share this information."
+            },
         ]
-    steps.append(("🔐 Account security & help", "2FA is required for your account. Keep recovery codes safe. Reopen this tour anytime from the sidebar with Take a Tour."))
+        if role == "admin":
+            steps.append({
+                "title": "📊 Live Analytics",
+                "description": "Administrators can review platform usage, active sessions, account statistics and security events.",
+                "tab": "Live Analytics",
+                "speech": "This is Live Analytics. Administrators can review platform activity, active sessions, account statistics and security events. Use the report period and charts to explore the available information."
+            })
+    steps.append({
+        "title": "🔐 Account Security & Help",
+        "description": "Protect your account with a strong password and the available two-factor authentication and recovery options. You can reopen this tour from the sidebar using Take a Tour.",
+        "tab": None,
+        "speech": "Finally, remember to protect your account. Use a strong password and keep your two factor authentication and recovery information safe. You can open this guided tour again at any time using Take a Tour in the sidebar. Thank you for using Government AI Platform."
+    })
+
     idx = max(0, min(int(st.session_state.get("product_tour_step", 0)), len(steps)-1))
-    title, description = steps[idx]
+    step = steps[idx]
     st.caption(f"Step {idx+1} of {len(steps)}")
     st.progress((idx+1)/len(steps))
-    st.subheader(title)
-    st.write(description)
+    st.subheader(step["title"])
+    st.write(step["description"])
+    st.caption("Ravana will explain this section in English. You can replay the explanation below.")
+    speech_text = json.dumps(step["speech"])
+    tab_text = json.dumps(step["tab"])
+    avatar_script = AVATAR_JS
+    tour_html = (
+        "<!doctype html><html><head><meta charset='utf-8'></head><body>"
+        "<button id='tourReplay' style='border:0;border-radius:22px;padding:9px 16px;"
+        "background:#5146d8;color:white;font-weight:600;cursor:pointer'>🔊 Replay Ravana's explanation</button>"
+        "<span id='tourVoiceStatus' style='margin-left:9px;font:12px Arial,sans-serif'></span>"
+        "<script>" + avatar_script + r"""
+        (function(){
+          const P=(function(){try{return window.parent&&window.parent.document?window.parent:window;}catch(e){return window;}})();
+          const text=__TOUR_TEXT__, target=__TOUR_TAB__;
+          function openTarget(){
+            if(!target)return;
+            const wanted=target.toLowerCase();
+            const tabs=P.document.querySelectorAll('button[role="tab"]');
+            for(const tab of tabs){
+              const label=(tab.innerText||tab.textContent||'').toLowerCase();
+              if(label.includes(wanted)){tab.click();break;}
+            }
+          }
+          function speak(){
+            const status=document.getElementById('tourVoiceStatus');
+            try{
+              if(!P.speechSynthesis||!P.SpeechSynthesisUtterance){status.textContent='English speech is not supported in this browser.';return;}
+              P.speechSynthesis.cancel();
+              P.__govSession=(P.__govSession||0)+1;
+              const avatar=getAvatar(); avatar.start();
+              const utterance=new P.SpeechSynthesisUtterance(text);
+              utterance.lang='en-US'; utterance.rate=0.94; utterance.pitch=0.95;
+              utterance.onboundary=function(){avatar.pulse();};
+              utterance.onend=function(){avatar.stop();status.textContent='';};
+              utterance.onerror=function(){avatar.stop();status.textContent='Speech could not start. Press Replay to try again.';};
+              P.speechSynthesis.speak(utterance);
+              status.textContent='Ravana is explaining…';
+            }catch(e){status.textContent='Press Replay to hear the explanation.';}
+          }
+          document.getElementById('tourReplay').addEventListener('click',speak);
+          openTarget();
+          // Attempt automatic narration; the replay control remains available if
+          // the browser blocks speech started during a Streamlit rerun.
+          setTimeout(speak,250);
+        })();
+        </script></body></html>
+        """.replace("__TOUR_TEXT__", speech_text).replace("__TOUR_TAB__", tab_text)
+    )
+    components.html(tour_html, height=58)
+
     st.divider()
     a,b,c=st.columns(3)
     with a:
