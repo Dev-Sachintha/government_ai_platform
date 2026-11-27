@@ -906,7 +906,11 @@ def check_password():
                 st.session_state["auth_error_message"] = (
                     f"Too many failed attempts ({count}). This {key_type} is blocked for 30 minutes."
                 )
-                log_event("database.db", user or "?", "LOGIN_IP_BLOCKED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
+                log_event(
+                    "database.db", user or "?",
+                    "LOGIN_BLOCKED" if key_type == "account" else "LOGIN_IP_BLOCKED",
+                    f"type={key_type}; key={guard_key[:16]}; failures={count}",
+                )
             else:
                 st.session_state["auth_error_message"] = "Invalid username or password."
             log_event("database.db", user or "?", "LOGIN_FAILED", f"type={key_type}; key={guard_key[:16]}; failures={count}")
