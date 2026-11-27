@@ -1,4 +1,4 @@
-"""Staff two-factor authentication and security email notifications.
+"""Account two-factor authentication and security email notifications.
 
 Required secrets:
   AUTH_ENCRYPTION_KEY: Fernet key (generate with cryptography.fernet.Fernet.generate_key()).
@@ -333,7 +333,7 @@ def get_staff_by_recovery_email(db_path, email):
             """SELECT s.username, u.role FROM staff_security s
                JOIN app_users u ON u.username=s.username COLLATE NOCASE
                WHERE lower(s.recovery_email)=lower(?) AND s.recovery_email_verified=1
-                 AND s.enabled=1 AND u.active=1 AND u.role IN ('admin','analyst') LIMIT 1""",
+                 AND s.enabled=1 AND u.active=1 AND u.role IN ('admin','analyst','user') LIMIT 1""",
             (str(email).strip(),),
         ).fetchone()
     return (row[0], row[1]) if row else (None, None)
