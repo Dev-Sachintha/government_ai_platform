@@ -891,90 +891,6 @@ def _finish_staff_login(username: str, role: str) -> None:
 
 
 
-def _render_staff_account_recovery():
-    st.subheader("🛟 Forgot Username / Password?")
-    st.caption("Use one unused recovery code and the current 6-digit code from your authenticator app. Both are required.")
-    # Apply a separate IP-based rate limit because the account username is intentionally unknown here.
-    ip_hash = auth_security.client_ip_hash()
-    recovery_guard_key = hashlib.sha256(("staff-recovery:" + ip_hash).encode("utf-8")).hexdigest()
-    blocked, _, remaining = _login_guard_state("database.db", recovery_guard_key)
-    if blocked:
-        st.error(f"Too many recovery attempts. Try again in about {max(1, (remaining + 59) // 60)} minute(s).")
-        return
-
-    with st.form("staff_recovery_verify_form"):
-        recovery_code = st.text_input("One-time Recovery Code", max_chars=32, help="Enter one of the 10 codes saved when 2FA was enabled.").strip().upper()
-        totp_code = st.text_input("Authenticator 6-digit code", max_chars=6, placeholder="000000")
-        verify = st.form_submit_button("Verify recovery details", type="primary")
-    if verify:
-        username, role = auth_security.identify_recovery_code("database.db", recovery_code)
-        valid_totp = bool(
-            username and len(totp_code.strip()) == 6 and totp_code.strip().isdigit()
-            and auth_security.verify_totp("database.db", username, totp_code.strip())
-        )
-        if username and valid_totp:
-            _clear_login_guard("database.db", recovery_guard_key)
-            st.session_state["staff_recovery_verified"] = {
-                "username": username, "role": role, "code": recovery_code,
-                "verified_at": time.time()
-            }
-            st.success("Verification successful. Set a new username and password below.")
-            st.rerun()
-        else:
-            attempts, newly_blocked = _record_login_failure("database.db", recovery_guard_key, "recovery_ip")
-            st.error("Recovery code or authenticator code is invalid.")
-            log_event("database.db", "staff-recovery", "STAFF_RECOVERY_FAILED", f"Invalid recovery details; attempts={attempts}.")
-            if attempts >= 3 or newly_blocked:
-                auth_security.send_security_alert(
-                    "Repeated staff account recovery attempts", "unknown",
-                    f"Invalid recovery attempts from a client IP. Attempts: {attempts}; blocked: {'yes' if newly_blocked else 'no'}."
-                )
-
-    verified = st.session_state.get("staff_recovery_verified")
-    if verified and time.time() - verified.get("verified_at", 0) > 300:
-        st.session_state.pop("staff_recovery_verified", None)
-        verified = None
-        st.warning("Recovery verification expired after 5 minutes. Please verify your recovery code and authenticator again.")
-    if verified:
-        with st.form("staff_recovery_reset_form"):
-            new_username = st.text_input("New username", max_chars=40)
-            new_password = st.text_input("New password", type="password")
-            confirm_password = st.text_input("Confirm new password", type="password")
-            reset = st.form_submit_button("Reset username and password", type="primary")
-        if reset:
-            new_username = new_username.strip()
-            if not re.fullmatch(r"[A-Za-z0-9_.-]{3,40}", new_username):
-                st.error("Username must be 3–40 characters: letters, numbers, dot, underscore or hyphen.")
-            elif len(new_password) < 12:
-                st.error("For better security, the new password must contain at least 12 characters.")
-            elif new_password != confirm_password:
-                st.error("Passwords do not match.")
-            else:
-                salt = secrets.token_hex(16)
-                digest = _password_digest(new_password, salt)
-                ok, result = auth_security.consume_recovery_code_and_update(
-                    "database.db", verified["code"], new_username, digest, salt
-                )
-                if ok:
-                    # A recovery consumes the submitted code and invalidates the old set.
-                    # Issue a fresh set immediately so the staff member is not stranded.
-                    fresh_codes = auth_security.generate_recovery_codes("database.db", new_username)
-                    st.session_state["staff_recovery_codes_once"] = fresh_codes
-                    log_event("database.db", new_username, "STAFF_ACCOUNT_RECOVERY", "Username/password reset using recovery code and TOTP; fresh recovery codes issued.")
-                    auth_security.send_security_alert(
-                        "Staff account recovered", new_username,
-                        "Username/password changed after recovery-code and TOTP verification. Previous recovery codes were invalidated and a new set was issued."
-                    )
-                    st.session_state.pop("staff_recovery_verified", None)
-                    st.session_state["staff_recovery_success"] = True
-                    save_now()
-                    st.rerun()
-                else:
-                    st.error(result)
-    if st.session_state.pop("staff_recovery_success", False):
-        st.success("Account updated. Sign in with your new username and password. Save the new recovery codes shown after login.")
-
-
 def _email_code_digest(email, code):
     return hashlib.sha256(("govai-email-login:" + str(email).strip().lower() + ":" + str(code).strip()).encode()).hexdigest()
 
@@ -983,7 +899,7 @@ def _render_staff_recovery_email_setup(db_path, username):
         st.caption("Verify an email address to sign in later without remembering your username or password.")
         email = st.text_input("Recovery email address", key="staff_recovery_email_input").strip().lower()
         if st.button("Send email verification code", key="staff_send_email_verify"):
-            if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", email):
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
                 st.error("Enter a valid email address.")
             else:
                 code = f"{secrets.randbelow(1000000):06d}"
@@ -1167,7 +1083,39 @@ def check_password():
                 st.code(secret)
                 st.markdown("**Authenticator setup URI:**")
                 st.code(auth_security.provisioning_uri(username, secret))
-            st.caption("After scanning, enter the current 6-digit code from your authenticator app to activate 2FA.")
+            st.caption("After scanning, verify your recovery email below, then enter the current 6-digit code from your authenticator app.")
+            with st.form("first_2fa_recovery_email_send_form"):
+                setup_email = st.text_input("Recovery email address", placeholder="name@example.com")
+                send_setup_email = st.form_submit_button("Send email verification code")
+            if send_setup_email:
+                setup_email = setup_email.strip().lower()
+                if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", setup_email):
+                    st.error("Enter a valid email address.")
+                else:
+                    email_code = f"{secrets.randbelow(1000000):06d}"
+                    if auth_security.send_recovery_email_code(setup_email, email_code):
+                        st.session_state["staff_enroll_email_pending"] = {"email": setup_email, "digest": _email_code_digest(setup_email, email_code), "expires": time.time() + 600, "username": username}
+                        st.success("Verification code sent. Check your inbox and spam folder.")
+                    else:
+                        st.error("Email could not be sent. Configure SMTP settings in Streamlit Cloud Secrets.")
+            email_pending = st.session_state.get("staff_enroll_email_pending")
+            if email_pending and email_pending.get("username", "").lower() == username.lower() and time.time() <= email_pending.get("expires", 0):
+                with st.form("first_2fa_recovery_email_verify_form"):
+                    email_code_input = st.text_input("Email verification code", max_chars=6, placeholder="000000")
+                    verify_email = st.form_submit_button("Verify recovery email")
+                if verify_email:
+                    if len(email_code_input.strip()) == 6 and hmac.compare_digest(_email_code_digest(email_pending["email"], email_code_input.strip()), email_pending["digest"]):
+                        st.session_state["staff_enroll_email_verified"] = email_pending["email"]
+                        st.session_state.pop("staff_enroll_email_pending", None)
+                        st.success("Recovery email verified.")
+                        st.rerun()
+                    else:
+                        st.error("Invalid email verification code.")
+            elif email_pending and time.time() > email_pending.get("expires", 0):
+                st.session_state.pop("staff_enroll_email_pending", None)
+                st.warning("Email code expired. Send a new one.")
+            if st.session_state.get("staff_enroll_email_verified"):
+                st.success("Verified recovery email: " + st.session_state["staff_enroll_email_verified"])
         else:
             st.write(f"Enter the current 6-digit authenticator code for **{username}**.")
         with st.form("staff_2fa_form"):
@@ -1183,9 +1131,14 @@ def check_password():
                     )
                 else:
                     valid = auth_security.verify_totp("database.db", username, code.strip())
+            if valid and pending["mode"] == "enroll" and not st.session_state.get("staff_enroll_email_verified"):
+                st.error("Verify your recovery email before enabling staff 2FA.")
+                valid = False
             if valid:
                 _clear_login_guard("database.db", otp_guard_key)
                 if pending["mode"] == "enroll":
+                    auth_security.set_recovery_email("database.db", username, st.session_state["staff_enroll_email_verified"])
+                    st.session_state.pop("staff_enroll_email_verified", None)
                     st.session_state["staff_recovery_codes_once"] = auth_security.generate_recovery_codes("database.db", username)
                     log_event("database.db", username, "STAFF_RECOVERY_CODES_CREATED", "Initial one-time recovery codes generated.")
                     save_now()
