@@ -756,8 +756,12 @@ LOGIN_RATE_BLOCK_SECONDS = 30 * 60
 LOGIN_RATE_MAX_FAILURES = 5
 
 
-def _login_guard_key(username: str) -> tuple[str, str]:
-    """Use the connection's client IP when exposed; otherwise fall back to username."""
+def _login_guard_key(username: str, role: str | None = None) -> tuple[str, str]:
+    """Staff are rate-limited per account; ordinary users are rate-limited by client IP."""
+    if role in ("admin", "analyst"):
+        normalized = (username or "?").strip().casefold()[:100]
+        return hashlib.sha256(("staff:" + normalized).encode("utf-8")).hexdigest(), "account"
+
     try:
         import ipaddress
         # Prefer Streamlit's connection metadata over forwarded headers.
@@ -771,9 +775,22 @@ def _login_guard_key(username: str) -> tuple[str, str]:
             return hashlib.sha256(("ip:" + normalized_ip).encode("utf-8")).hexdigest(), "ip"
     except Exception:
         pass
-    # Avoid treating every visitor as one shared IP when a proxy hides client metadata.
+    # Avoid treating every visitor as one shared identifier when a proxy hides client metadata.
     normalized = (username or "?").strip().casefold()[:100]
     return hashlib.sha256(("user:" + normalized).encode("utf-8")).hexdigest(), "username"
+
+
+def _get_login_role(username: str) -> str | None:
+    """Read the active account role before applying the role-specific login guard."""
+    conn = sqlite3.connect("database.db")
+    try:
+        row = conn.execute(
+            "SELECT role FROM app_users WHERE username = ? COLLATE NOCASE AND active = 1",
+            (username,),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def _login_guard_state(db_path: str, guard_key: str) -> tuple[bool, int, int]:
@@ -859,13 +876,14 @@ def check_password():
     def password_entered():
         user = st.session_state.get("login_username", "").strip()
         pwd = st.session_state.get("login_password", "")
-        guard_key, key_type = _login_guard_key(user)
+        account_role = _get_login_role(user)
+        guard_key, key_type = _login_guard_key(user, account_role)
         blocked, failures, remaining = _login_guard_state("database.db", guard_key)
         if blocked:
             st.session_state["authenticated"] = False
             st.session_state["auth_error"] = True
             st.session_state["auth_error_message"] = (
-                f"Too many failed attempts. This {key_type} is temporarily blocked. "
+                f"Too many failed attempts. This {'account' if key_type == 'account' else key_type} is temporarily blocked. "
                 f"Try again in about {max(1, (remaining + 59) // 60)} minute(s)."
             )
             log_event("database.db", user or "?", "LOGIN_BLOCKED", f"type={key_type}; key={guard_key[:16]}")
@@ -1336,7 +1354,7 @@ def render_admin_dashboard(db_path: str):
                 st.success("Temporary block released.")
                 st.rerun()
         con.close()
-        st.caption("Automatic protection: 5 failed attempts within 15 minutes trigger a 30-minute temporary block. IP addresses are hashed before storage; if the hosting proxy does not expose an IP, protection falls back to the username.")
+        st.caption("Automatic protection: ordinary User accounts are blocked by client IP after 5 failed attempts within 15 minutes (30-minute block). Admin and Analyst accounts are protected separately by account-based rate limiting, so a shared IP block will not lock staff out. IP addresses are hashed before storage.")
     live()
 
 
