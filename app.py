@@ -979,9 +979,18 @@ def check_password():
             st.markdown("**Account:** " + username)
             st.markdown("**Setup key (keep private):**")
             st.code(secret)
-            st.markdown("**Authenticator setup URI:**")
-            st.code(auth_security.provisioning_uri(username, secret))
-            st.caption("Enter the 6-digit code shown by your authenticator app below to activate 2FA.")
+            st.markdown("**Scan this QR code with Google Authenticator or Microsoft Authenticator:**")
+            try:
+                qr_image = auth_security.provisioning_qr_code(username, secret)
+                st.image(qr_image, caption="Government AI Platform — staff 2FA setup", width=230)
+            except Exception as exc:
+                st.warning(f"QR code could not be displayed. Use the setup key below instead. ({exc})")
+            with st.expander("Manual setup (if QR scanning is unavailable)"):
+                st.markdown("**Setup key (keep private):**")
+                st.code(secret)
+                st.markdown("**Authenticator setup URI:**")
+                st.code(auth_security.provisioning_uri(username, secret))
+            st.caption("After scanning, enter the current 6-digit code from your authenticator app to activate 2FA.")
         else:
             st.write(f"Enter the current 6-digit authenticator code for **{username}**.")
         with st.form("staff_2fa_form"):
