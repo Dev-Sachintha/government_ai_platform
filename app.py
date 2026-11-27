@@ -1307,7 +1307,6 @@ def main():
     # Ordinary users see ONLY: AI Workspace & Chat, Scan, HoloMotion 3D. The other tabs are not even created,
     # so there is nothing for them to open (the role comes from the login, not from anything the user can edit).
     tab_defs = [
-        ("admin_dash", "📊 Live Analytics (Admin)", user_role == "admin"),
         ("chat", "💬 AI Workspace & Chat", True),
         ("web", "🌐 Website Sources", is_staff),
         ("lib", "🖼️ Image & PDF Library", is_staff),
@@ -1318,6 +1317,7 @@ def main():
         ("monitor", "🖥️ Screen Monitor", is_staff),
         ("phone", "📱 Mobile Phone Monitor", is_staff),
         ("pcmetrics", "📈 PC System Monitoring", is_staff),
+        ("admin_dash", "📊 Live Analytics (Admin)", user_role == "admin"),
     ]
     visible = [(k, label) for k, label, allowed in tab_defs if allowed]
     tabs = dict(zip([k for k, _ in visible], st.tabs([label for _, label in visible])))
