@@ -11,6 +11,7 @@ import os
 import smtplib
 import sqlite3
 import ssl
+import time
 from email.message import EmailMessage
 
 import pyotp
@@ -46,9 +47,13 @@ def ensure_security_table(db_path):
                 totp_secret_enc TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_ip_hash TEXT NOT NULL DEFAULT '',
+                last_totp_step INTEGER NOT NULL DEFAULT -1,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(staff_security)")}
+        if "last_totp_step" not in columns:
+            conn.execute("ALTER TABLE staff_security ADD COLUMN last_totp_step INTEGER NOT NULL DEFAULT -1")
 
 
 def totp_is_enabled(db_path, username):
@@ -89,36 +94,60 @@ def provisioning_qr_code(username, secret):
 
 
 
+def _matching_totp_step(secret, code, now=None):
+    """Return the matching RFC 6238 time-step, allowing one-step clock drift."""
+    value = str(code).strip()
+    if len(value) != 6 or not value.isdigit():
+        return None
+    now = time.time() if now is None else float(now)
+    totp = pyotp.TOTP(secret)
+    for offset in (0, -1, 1):
+        candidate_time = now + offset * totp.interval
+        if totp.verify(value, for_time=candidate_time, valid_window=0):
+            return int(candidate_time // totp.interval)
+    return None
+
+
 def enable_totp(db_path, username, secret, code):
-    if not pyotp.TOTP(secret).verify(str(code).strip(), valid_window=1):
+    step = _matching_totp_step(secret, code)
+    if step is None:
         return False
     encrypted = _fernet().encrypt(secret.encode("utf-8")).decode("ascii")
     ensure_security_table(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute("""
-            INSERT INTO staff_security(username, totp_secret_enc, enabled)
-            VALUES (?, ?, 1)
+            INSERT INTO staff_security(username, totp_secret_enc, enabled, last_totp_step)
+            VALUES (?, ?, 1, ?)
             ON CONFLICT(username) DO UPDATE SET
                 totp_secret_enc=excluded.totp_secret_enc,
-                enabled=1, updated_at=CURRENT_TIMESTAMP
-        """, (username, encrypted))
+                enabled=1, last_totp_step=excluded.last_totp_step,
+                updated_at=CURRENT_TIMESTAMP
+        """, (username, encrypted, step))
     return True
 
 
 def verify_totp(db_path, username, code):
     ensure_security_table(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(db_path, timeout=10) as conn:
         row = conn.execute(
-            "SELECT totp_secret_enc FROM staff_security WHERE username=? COLLATE NOCASE AND enabled=1",
+            "SELECT totp_secret_enc, last_totp_step FROM staff_security WHERE username=? COLLATE NOCASE AND enabled=1",
             (username,),
         ).fetchone()
-    if not row:
-        return False
-    try:
-        secret = _fernet().decrypt(row[0].encode("ascii")).decode("utf-8")
-    except (InvalidToken, ValueError, RuntimeError):
-        return False
-    return pyotp.TOTP(secret).verify(str(code).strip(), valid_window=1)
+        if not row:
+            return False
+        try:
+            secret = _fernet().decrypt(row[0].encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError, RuntimeError):
+            return False
+        step = _matching_totp_step(secret, code)
+        if step is None or step <= int(row[1] if row[1] is not None else -1):
+            return False
+        cursor = conn.execute(
+            "UPDATE staff_security SET last_totp_step=?, updated_at=CURRENT_TIMESTAMP "
+            "WHERE username=? COLLATE NOCASE AND enabled=1 AND last_totp_step < ?",
+            (step, username, step),
+        )
+        return cursor.rowcount == 1
 
 
 def client_ip_hash():
