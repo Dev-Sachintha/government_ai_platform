@@ -1286,7 +1286,7 @@ def _show_staff_recovery_codes():
     codes = st.session_state.get("staff_recovery_codes_once")
     if codes:
         with st.sidebar.expander("🔑 Save your new recovery codes", expanded=True):
-            st.warning("These codes are shown only now. Save them somewhere secure. Each code can be used once.")
+            st.warning("These are 10 backup codes, each 8 digits and usable once. Save them securely; they are shown only now.")
             st.code("\\n".join(codes))
             if st.button("I have saved these codes", key="dismiss_staff_recovery_codes"):
                 st.session_state.pop("staff_recovery_codes_once", None)
@@ -1294,7 +1294,7 @@ def _show_staff_recovery_codes():
 
 
 def _render_staff_recovery_management(db_path, username):
-    with st.expander("🔑 2FA Recovery Codes"):
+    with st.expander("🔑 2FA Backup Codes"):
         st.caption("Generate 10 new one-time 8-digit backup codes. This replaces and invalidates all previously generated codes.")
         st.warning("Confirm your identity with the current authenticator code before replacing recovery codes.")
         with st.form("regenerate_staff_recovery_codes_form"):
@@ -1308,7 +1308,7 @@ def _render_staff_recovery_management(db_path, username):
                 save_now()
                 st.rerun()
             else:
-                st.error("Invalid or expired authenticator code. Recovery codes were not changed.")
+                st.error("Invalid or expired authenticator code. Backup codes were not changed.")
 
 def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
