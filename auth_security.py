@@ -130,7 +130,10 @@ def record_staff_ip(db_path, username, ip_hash):
 
 def send_security_alert(event, username, details):
     host = _setting("SMTP_HOST").strip()
-    port = int(_setting("SMTP_PORT", "465") or "465")
+    try:
+        port = int(_setting("SMTP_PORT", "465") or "465")
+    except (TypeError, ValueError):
+        return False
     smtp_user = _setting("SMTP_USERNAME").strip()
     smtp_password = _setting("SMTP_PASSWORD")
     sender = _setting("SMTP_FROM_EMAIL", smtp_user).strip()
