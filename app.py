@@ -1059,11 +1059,11 @@ def check_password():
         st.subheader("🔐 Staff two-factor verification")
         if pending["mode"] == "enroll":
             secret = st.session_state.get("staff_2fa_secret_pending", "")
-            st.info("Set up an authenticator app before continuing. Add this account manually in Google Authenticator, Microsoft Authenticator, or another TOTP app.")
+            st.info("Set up a time-based authenticator (TOTP). Compatible apps include Google Authenticator, Microsoft Authenticator, Apple Passwords, 1Password, Bitwarden, Authy and Aegis.")
             st.markdown("**Account:** " + username)
             st.markdown("**Setup key (keep private):**")
             st.code(secret)
-            st.markdown("**Scan this QR code with Google Authenticator or Microsoft Authenticator:**")
+            st.markdown("**Scan this QR code with your authenticator app:**")
             try:
                 qr_image = auth_security.provisioning_qr_code(username, secret)
                 st.image(qr_image, caption="Government AI Platform — staff 2FA setup", width=230)
@@ -1145,12 +1145,19 @@ def _show_staff_recovery_codes():
 def _render_staff_recovery_management(db_path, username):
     with st.expander("🔑 2FA Recovery Codes"):
         st.caption("Generate 10 new one-time codes. This replaces and invalidates all previously generated codes.")
-        if st.button("Generate / Regenerate Recovery Codes", key="generate_staff_recovery_codes"):
-            codes = auth_security.generate_recovery_codes(db_path, username)
-            st.session_state["staff_recovery_codes_once"] = codes
-            log_event(db_path, username, "STAFF_RECOVERY_CODES_REGENERATED", "10 one-time recovery codes generated.")
-            save_now()
-            st.rerun()
+        st.warning("Confirm your identity with the current authenticator code before replacing recovery codes.")
+        with st.form("regenerate_staff_recovery_codes_form"):
+            current_totp = st.text_input("Current 6-digit authenticator code", max_chars=6, placeholder="000000")
+            regenerate = st.form_submit_button("Generate / Regenerate Recovery Codes", type="primary")
+        if regenerate:
+            if len(current_totp.strip()) == 6 and current_totp.strip().isdigit() and auth_security.verify_totp(db_path, username, current_totp.strip()):
+                codes = auth_security.generate_recovery_codes(db_path, username)
+                st.session_state["staff_recovery_codes_once"] = codes
+                log_event(db_path, username, "STAFF_RECOVERY_CODES_REGENERATED", "10 one-time recovery codes generated after TOTP verification.")
+                save_now()
+                st.rerun()
+            else:
+                st.error("Invalid or expired authenticator code. Recovery codes were not changed.")
 
 def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
