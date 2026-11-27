@@ -866,7 +866,7 @@ def render_ai_chat_interface(
             font-size:16px !important; line-height:1.45;
           }
         }
-        </style>"""",
+        </style>""",
         unsafe_allow_html=True,
     )
     active_tid = st.session_state.get("active_thread_id")
