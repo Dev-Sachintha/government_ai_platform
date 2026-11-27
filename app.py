@@ -1089,7 +1089,7 @@ def check_password():
                 send_setup_email = st.form_submit_button("Send email verification code")
             if send_setup_email:
                 setup_email = setup_email.strip().lower()
-                if not re.fullmatch(r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+", setup_email):
+                if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", setup_email):
                     st.error("Enter a valid email address.")
                 else:
                     email_code = f"{secrets.randbelow(1000000):06d}"
