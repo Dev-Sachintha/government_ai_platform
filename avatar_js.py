@@ -12,15 +12,18 @@ function getAvatar() {
   const doc = host.document;
   const wrap = doc.createElement('div');
   wrap.id = 'gov-avatar';
-  wrap.style.cssText = 'position:fixed;right:16px;bottom:86px;width:clamp(150px,26vw,245px);max-width:calc(100vw - 24px);z-index:99999;border-radius:18px;overflow:hidden;' +
-    'background:#0b1030;box-shadow:0 12px 32px rgba(0,0,0,.35);border:2px solid rgba(255,255,255,.4);display:none;opacity:0;' +
-    'transform:translateY(24px) scale(.96);transition:opacity .3s ease,transform .3s ease;font-family:Inter,system-ui,sans-serif;';
-  wrap.innerHTML = '<canvas width="720" height="720" style="width:100%;display:block"></canvas>' +
-    '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;color:#fff;font-size:12px;font-weight:600;background:rgba(0,0,0,.6)">' +
-    '<span>🔊 Speaking…</span><button type="button" title="Stop" style="background:rgba(255,255,255,.18);color:#fff;border:none;border-radius:999px;padding:3px 10px;cursor:pointer;font-size:12px">⏹ Stop</button></div>';
+  wrap.style.cssText = 'position:fixed;right:22px;bottom:86px;width:clamp(170px,24vw,220px);max-width:calc(100vw - 28px);z-index:99999;' +
+    'border-radius:48% 52% 45% 55% / 48% 46% 54% 52%;overflow:visible;' +
+    'background:radial-gradient(circle at 24% 52%,#fff 0 25%,transparent 26%),radial-gradient(circle at 42% 34%,#fff 0 31%,transparent 32%),radial-gradient(circle at 66% 39%,#fff 0 32%,transparent 33%),radial-gradient(circle at 82% 56%,#fff 0 24%,transparent 25%),linear-gradient(180deg,#fff,#edf5ff);' +
+    'filter:drop-shadow(0 12px 20px rgba(35,60,110,.25));padding:15px 13px 12px;box-sizing:border-box;display:none;opacity:0;' +
+    'transform:translateY(24px) scale(.92);transition:opacity .3s ease,transform .3s ease;font-family:Inter,system-ui,sans-serif;animation:govCloudFloat 4s ease-in-out infinite;';
+  wrap.innerHTML = '<div style="width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">' +
+    '<canvas width="720" height="720" style="width:76%;display:block;border-radius:50%;border:4px solid #fff;box-shadow:0 5px 18px rgba(30,50,90,.22)"></canvas>' +
+    '<div style="display:flex;align-items:center;justify-content:center;gap:7px;color:#24324b;font-size:12px;font-weight:800;text-shadow:0 1px #fff"><span>☁️ Ravana</span><span style="color:#5265dc">● Speaking</span></div>' +
+    '<button type="button" title="Stop speaking" style="background:#4f46e5;color:#fff;border:none;border-radius:999px;padding:4px 12px;cursor:pointer;font-size:11px;font-weight:700">⏹ Stop</button></div>';
   doc.body.appendChild(wrap);
   const responsive = doc.createElement('style');
-  responsive.textContent = '@media(max-width:600px){#gov-avatar{width:min(156px,38vw)!important;right:10px!important;bottom:82px!important;border-radius:14px!important}#gov-avatar>div{padding:5px 8px!important;font-size:10px!important}#gov-avatar button{padding:2px 7px!important;font-size:10px!important}}';
+  responsive.textContent = '@keyframes govCloudFloat{0%,100%{margin-bottom:0;transform:translateY(0)}50%{margin-bottom:9px;transform:translateY(-5px)}}@media(max-width:600px){#gov-avatar{width:min(158px,39vw)!important;right:9px!important;bottom:78px!important;padding:10px 8px 8px!important}#gov-avatar canvas{width:72%!important}#gov-avatar>div{gap:3px!important}#gov-avatar button{padding:3px 9px!important;font-size:10px!important}}';
   doc.head.appendChild(responsive);
 
   const canvas = wrap.querySelector('canvas');
