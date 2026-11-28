@@ -1282,6 +1282,67 @@ def _render_staff_recovery_management(db_path, username):
                 st.error("Invalid or expired authenticator code. Backup codes were not changed.")
 
 
+
+def _render_admin_decrypt_recovery_backup(db_path, username):
+    """Admin-only, step-up-authenticated decrypt/export for the admin's own Drive backup."""
+    with st.sidebar.expander("🔓 Decrypt 2FA Backup (.enc)", expanded=False):
+        st.caption(
+            "Decrypt and validate the encrypted backup in your own connected Google Drive. "
+            "This action requires a fresh 6-digit Authenticator code."
+        )
+        with st.form("admin_decrypt_recovery_backup_form"):
+            current_totp = st.text_input(
+                "Current 6-digit Authenticator code",
+                max_chars=6,
+                placeholder="000000",
+                type="password",
+            )
+            submitted = st.form_submit_button("Decrypt & verify backup", type="primary")
+        if submitted:
+            if len(current_totp.strip()) != 6 or not current_totp.strip().isdigit():
+                st.error("Enter a valid 6-digit Authenticator code.")
+            else:
+                status = auth_security.verify_totp_detailed(
+                    db_path, username, current_totp.strip()
+                )
+                if status != "valid":
+                    if status == "already_used":
+                        st.error("That Authenticator code has already been used. Wait for the next code.")
+                    else:
+                        st.error("Authenticator code is invalid or expired.")
+                else:
+                    try:
+                        codes = auth_security.read_drive_recovery_backup(db_path, username)
+                        payload = json.dumps(
+                            {"recovery_codes": codes},
+                            indent=2,
+                        ).encode("utf-8")
+                        log_event(
+                            db_path, username, "STAFF_RECOVERY_BACKUP_DECRYPTED",
+                            f"Admin decrypted and validated own Google Drive backup; valid_codes={len(codes)}.",
+                        )
+                        st.success(
+                            f"Decryption successful. {len(codes)} unique 8-digit recovery code(s) passed validation."
+                        )
+                        st.download_button(
+                            "⬇️ Download decrypted recovery codes (JSON)",
+                            data=payload,
+                            file_name="govai_recovery_codes_decrypted.json",
+                            mime="application/json",
+                            key="admin_download_decrypted_recovery_backup",
+                        )
+                        st.warning(
+                            "The downloaded file contains sensitive one-time recovery codes. "
+                            "Store it securely and delete any temporary copies after use."
+                        )
+                    except Exception as exc:
+                        log_event(
+                            db_path, username, "STAFF_RECOVERY_BACKUP_DECRYPT_FAILED",
+                            f"Admin backup decryption/verification failed: {type(exc).__name__}.",
+                        )
+                        st.error(f"Could not decrypt or verify the Drive backup: {exc}")
+
+
 def _render_google_drive_backup_settings(db_path, username):
     """Per-account Google Drive connection and encrypted recovery-code backup settings."""
     with st.sidebar.expander("☁️ Google Drive Backup", expanded=False):
@@ -1338,6 +1399,8 @@ def render_sidebar_controls(db_path, user_role):
         _show_staff_recovery_codes()
         _render_staff_recovery_management(db_path, username)
         _render_staff_recovery_email_setup(db_path, username)
+        if user_role == "admin":
+            _render_admin_decrypt_recovery_backup(db_path, username)
         if user_role in ("admin", "analyst", "user"):
             _render_google_drive_backup_settings(db_path, username)
 
