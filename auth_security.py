@@ -16,7 +16,10 @@ import smtplib
 import sqlite3
 import ssl
 import time
+import threading
 from email.message import EmailMessage
+
+_drive_recovery_lock = threading.Lock()
 
 import pyotp
 import qrcode
@@ -591,7 +594,7 @@ def sync_recovery_codes_to_drive(db_path, username):
 
 
 
-def consume_drive_backup_code(db_path, username, code):
+def _consume_drive_backup_code_locked(db_path, username, code):
     """Consume a Drive recovery code and synchronously update the encrypted remote backup."""
     value = str(code).strip()
     if re.fullmatch(r"\d{8}", value) is None:
@@ -643,8 +646,6 @@ def consume_drive_backup_code(db_path, username, code):
         if not any(secrets.compare_digest(item, value) for item in codes):
             return False
         remaining = [item for item in codes if not secrets.compare_digest(item, value)]
-        if not remaining:
-            raise RuntimeError("No unused recovery codes remain. Generate a new recovery-code set.")
         encrypted_remaining = _fernet().encrypt(json.dumps(remaining).encode("utf-8"))
         media = MediaIoBaseUpload(
             io.BytesIO(encrypted_remaining), mimetype="application/octet-stream", resumable=False
@@ -688,6 +689,12 @@ def consume_drive_backup_code(db_path, username, code):
         )
         conn.commit()
     return True
+
+
+def consume_drive_backup_code(db_path, username, code):
+    """Serialize remote read-modify-write cycles to prevent concurrent code resurrection."""
+    with _drive_recovery_lock:
+        return _consume_drive_backup_code_locked(db_path, username, code)
 
 
 def identify_recovery_code(db_path, code):
