@@ -119,6 +119,8 @@ def health():
 @app.post("/v1/heartbeat")
 def heartbeat(payload: Heartbeat, x_monitor_key: Optional[str] = Header(default=None)):
     authorize(x_monitor_key, payload.device_id, allow_pc_session=True)
+    if x_monitor_key and not secrets.compare_digest(x_monitor_key, API_KEY) and payload.kind != "pc":
+        raise HTTPException(status_code=403, detail="PC session tokens are restricted to PC devices.")
     now = datetime.now(timezone.utc).isoformat()
     with lock:
         item = payload.model_dump()
