@@ -348,7 +348,7 @@ def sync_recovery_codes_to_drive(db_path, username):
 
         info = json.loads(service_account_json)
         credentials = Credentials.from_service_account_info(
-            info, scopes=["https://www.googleapis.com/auth/drive"]
+            info, scopes=["https://www.googleapis.com/auth/drive.file"]
         )
         drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
         opaque_name = hashlib.sha256(
