@@ -5,6 +5,7 @@ import sqlite3
 import tempfile
 import zipfile
 import stat
+import re
 
 from db_utils import REQUIRED_TABLES
 
@@ -83,7 +84,7 @@ def validate_and_restore_sqlite(
                     normalized = entry.filename.replace("\\", "/")
                     parts = normalized.split("/")
                     mode = (entry.external_attr >> 16) & 0xFFFF
-                    if normalized.startswith("/") or any(part in ("..", "") for part in parts if part != ""):
+                    if normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized) or any(part == ".." for part in parts):
                         return False, "Invalid archive: unsafe file path."
                     if stat.S_ISLNK(mode):
                         return False, "Invalid archive: symbolic links are not allowed."
@@ -119,13 +120,15 @@ def validate_and_restore_sqlite(
             if not success:
                 return False, msg
 
-            # Same-directory atomic replacement prevents a partially-written live DB.
-            os.replace(temp_db_path, db_path)
-            temp_db_path = None
-            for suffix in ("-wal", "-shm"):
-                sidecar = db_path + suffix
-                if os.path.exists(sidecar):
-                    os.remove(sidecar)
+            # Use SQLite's backup API to replace database contents transactionally;
+            # do not rename the live file underneath SQLite or discard its WAL state.
+            source = sqlite3.connect(temp_db_path, timeout=30)
+            destination = sqlite3.connect(db_path, timeout=30)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+                source.close()
             return True, "Database passed integrity and schema validation! Restored successfully."
         finally:
             if temp_db_path and os.path.exists(temp_db_path):
