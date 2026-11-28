@@ -594,6 +594,75 @@ def sync_recovery_codes_to_drive(db_path, username):
 
 
 
+
+def read_drive_recovery_backup(db_path, username):
+    """Download and decrypt this account's own encrypted recovery backup from Google Drive.
+
+    Returns validated recovery codes to the trusted server-side caller only.
+    The caller must enforce fresh administrator re-authentication before revealing them.
+    """
+    ensure_google_drive_oauth_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        token_row = conn.execute(
+            "SELECT refresh_token_enc FROM google_drive_oauth_tokens_per_user WHERE username=? COLLATE NOCASE",
+            (str(username),),
+        ).fetchone()
+    if not token_row:
+        raise RuntimeError("Connect your own Google Drive from the account sidebar first.")
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+
+        refresh_token = _fernet().decrypt(bytes(token_row[0])).decode("utf-8")
+        config = _google_drive_oauth_config()
+        section = config.get("web") or config.get("installed")
+        credentials = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=section["client_id"],
+            client_secret=section["client_secret"],
+            scopes=["https://www.googleapis.com/auth/drive.file"],
+        )
+        credentials.refresh(Request())
+        drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        opaque_name = hashlib.sha256(
+            ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
+        ).hexdigest() + ".enc"
+        found = drive.files().list(
+            q=f"name='{opaque_name}' and trashed=false",
+            fields="files(id)",
+            pageSize=2,
+        ).execute().get("files", [])
+        if len(found) != 1:
+            if not found:
+                raise RuntimeError("No encrypted recovery backup was found in this account's Google Drive.")
+            raise RuntimeError("Multiple matching encrypted recovery backups were found. Contact the platform administrator.")
+        output = io.BytesIO()
+        downloader = MediaIoBaseDownload(
+            output, drive.files().get_media(fileId=found[0]["id"])
+        )
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return _decrypt_and_validate_recovery_backup(
+            output.getvalue(), expected_count=None
+        )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logging.warning(
+            "Encrypted recovery backup download/decryption failed for account %s: %s",
+            str(username)[:80], type(exc).__name__,
+        )
+        raise RuntimeError(
+            f"Google Drive backup could not be downloaded or decrypted ({type(exc).__name__})."
+        ) from exc
+
+
 def _consume_drive_backup_code_locked(db_path, username, code):
     """Consume a Drive recovery code and synchronously update the encrypted remote backup."""
     value = str(code).strip()
