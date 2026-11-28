@@ -97,23 +97,21 @@ def _db_sig(db_path):
 
 
 def _snapshot_bytes(db_path) -> bytes:
-    """Consistent copy of the live DB, gzip-compressed."""
-    tmp = tempfile.mktemp(suffix=".db")
-    src = sqlite3.connect(db_path)
-    dst = sqlite3.connect(tmp)
+    """Create a consistent SQLite snapshot using an exclusively-created temp file."""
+    tmp_path = None
     try:
-        src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
-    try:
-        with open(tmp, "rb") as fh:
+        with tempfile.NamedTemporaryFile(prefix="govai-snapshot-", suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+        with sqlite3.connect(db_path, timeout=30) as src, sqlite3.connect(tmp_path) as dst:
+            src.backup(dst)
+        with open(tmp_path, "rb") as fh:
             return gzip.compress(fh.read(), compresslevel=6)
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _summary(db_path) -> str:
@@ -166,25 +164,27 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
         meta.raise_for_status()
         raw = requests.get(_url(cfg), headers=_headers(cfg, raw=True), params={"ref": cfg["branch"]}, timeout=TIMEOUT)
         raw.raise_for_status()
-        data = gzip.decompress(raw.content)
-        tmp = tempfile.mktemp(suffix=".db")
-        with open(tmp, "wb") as fh:
-            fh.write(data)
+        if len(raw.content) > MAX_UPLOAD_BYTES:
+            raise ValueError("saved database archive exceeds the configured compressed-size limit")
+        with gzip.GzipFile(fileobj=__import__("io").BytesIO(raw.content)) as archive:
+            data = archive.read(512 * 1024 * 1024 + 1)
+        if len(data) > 512 * 1024 * 1024:
+            raise ValueError("saved database exceeds the 512 MB uncompressed-size limit")
+        tmp_path = None
         try:
-            if not _valid_sqlite(tmp):
-                raise ValueError("saved copy failed the integrity check")
-            src = sqlite3.connect(tmp)
-            dst = sqlite3.connect(db_path)
-            try:
+            with tempfile.NamedTemporaryFile(prefix="govai-restore-", suffix=".db", delete=False) as tmp:
+                tmp_path = tmp.name
+                tmp.write(data)
+            if not _valid_sqlite(tmp_path):
+                raise ValueError("saved copy failed the integrity check or required-table check")
+            with sqlite3.connect(tmp_path, timeout=30) as src, sqlite3.connect(db_path, timeout=30) as dst:
                 src.backup(dst)
-            finally:
-                dst.close()
-                src.close()
         finally:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
         with _lock:
             _state["restore_ok"] = True
             _state["last_sig"] = _db_sig(db_path)
