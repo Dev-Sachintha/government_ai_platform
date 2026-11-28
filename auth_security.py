@@ -484,12 +484,12 @@ def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
         raise ValueError("Encrypted recovery backup could not be decrypted or parsed.") from exc
     valid_items = (
         isinstance(codes, list)
-        and 1 <= len(codes) <= 10
+        and 0 <= len(codes) <= 10
         and all(isinstance(code, str) and re.fullmatch(r"\d{8}", code) for code in codes)
         and len(set(codes)) == len(codes)
     )
     if not valid_items or (expected_count is not None and len(codes) != expected_count):
-        expected = "between 1 and 10" if expected_count is None else f"exactly {expected_count}"
+        expected = "between 0 and 10" if expected_count is None else f"exactly {expected_count}"
         raise ValueError(f"Recovery backup must contain {expected} unique 8-digit codes.")
     return codes
 
@@ -504,7 +504,7 @@ def verify_local_recovery_backup(db_path, username):
         ).fetchone()
     if not row:
         raise RuntimeError("No encrypted recovery-code backup exists for this account.")
-    return len(_decrypt_and_validate_recovery_backup(row[0], expected_count=10))
+    return len(_decrypt_and_validate_recovery_backup(row[0], expected_count=None))
 
 
 def sync_recovery_codes_to_drive(db_path, username):
@@ -520,7 +520,7 @@ def sync_recovery_codes_to_drive(db_path, username):
         return False
 
     # Validate locally before sending anything to Drive. Plaintext is never uploaded.
-    local_codes = _decrypt_and_validate_recovery_backup(row[0], expected_count=10)
+    local_codes = _decrypt_and_validate_recovery_backup(row[0], expected_count=None)
 
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -578,7 +578,7 @@ def sync_recovery_codes_to_drive(db_path, username):
         while not done:
             _, done = downloader.next_chunk()
         remote_codes = _decrypt_and_validate_recovery_backup(
-            downloaded.getvalue(), expected_count=10
+            downloaded.getvalue(), expected_count=None
         )
         if set(remote_codes) != set(local_codes):
             raise ValueError("The uploaded Drive backup does not match the local recovery-code set.")
