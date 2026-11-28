@@ -73,8 +73,7 @@ Groq, OpenRouter, Gemini, OpenAI...), `anthropic` (Claude API). Running locally 
 **Important on Streamlit Cloud**
 - Saved data (websites, library, audit log) is temporary and is lost when the app restarts.
   Admins: use **💾 Backup DB** in the sidebar regularly and **🔄 Restore DB** after a restart.
-- Set `ADMIN_PASSWORD` / `ANALYST_PASSWORD` in Secrets. Without them the old default passwords
-  are used and the app shows a warning.
+- Set `ADMIN_PASSWORD` / `ANALYST_PASSWORD` in Secrets. Without them initial staff accounts are not created; configure strong unique passwords before deployment.
 
 ## Adding documents (PDF handbooks etc.)
 - Add PDFs and pictures in the **🖼️ Image & PDF Library** tab. Each PDF page is stored with its text,
@@ -230,7 +229,7 @@ It is turned into glowing particles and appears under the **My Models** tab; use
 * Files: `scan.py` (database + AI), `scan_ui.py` (tab), `holomotion_tab.py` (viewer bridge).
 
 ## User Management and Screen Monitor
-- The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets or the documented development defaults.
+- The initial `admin` and `analyst` accounts are created in SQLite on first launch, using `ADMIN_PASSWORD` / `ANALYST_PASSWORD` secrets. No default passwords are shipped.
 - Both Admin and Analyst roles can open **👥 User Management** and create additional Admin or Analyst accounts. New passwords are stored as salted PBKDF2-SHA256 hashes, not plaintext.
 - Both roles have a **🖥️ Screen Monitor** button in the sidebar and a Screen Monitor tab. Screen capture starts only after the signed-in user clicks Start and approves the browser's screen/window selection prompt. The preview stays in that browser and is not sent to the server. Use Chrome or Edge on HTTPS or localhost.
 
