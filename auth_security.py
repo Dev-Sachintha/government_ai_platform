@@ -476,22 +476,21 @@ def google_drive_oauth_connected(db_path, username):
 
 
 def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
-    """Decrypt a backup and validate its one-time recovery-code payload."""
+    """Decrypt and validate an encrypted recovery list (10 initially, then 1-9)."""
     try:
         decoded = _fernet().decrypt(bytes(encrypted_blob)).decode("utf-8")
         codes = json.loads(decoded)
     except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise ValueError("Encrypted recovery backup could not be decrypted or parsed.") from exc
-
-    if (
-        not isinstance(codes, list)
-        or len(codes) != expected_count
-        or any(not isinstance(code, str) or re.fullmatch(r"\d{8}", code) is None for code in codes)
-        or len(set(codes)) != expected_count
-    ):
-        raise ValueError(
-            f"Recovery backup must contain exactly {expected_count} unique 8-digit codes."
-        )
+    valid_items = (
+        isinstance(codes, list)
+        and 1 <= len(codes) <= 10
+        and all(isinstance(code, str) and re.fullmatch(r"\d{8}", code) for code in codes)
+        and len(set(codes)) == len(codes)
+    )
+    if not valid_items or (expected_count is not None and len(codes) != expected_count):
+        expected = "between 1 and 10" if expected_count is None else f"exactly {expected_count}"
+        raise ValueError(f"Recovery backup must contain {expected} unique 8-digit codes.")
     return codes
 
 
@@ -593,16 +592,10 @@ def sync_recovery_codes_to_drive(db_path, username):
 
 
 def consume_drive_backup_code(db_path, username, code):
-    """Restore an account's encrypted Drive recovery list and consume one code exactly once.
-
-    Drive stores only the Fernet-encrypted recovery-code list. Codes are imported
-    into the local one-time hash table (without replacing already-used rows),
-    then the submitted code is consumed and removed from the encrypted list.
-    """
+    """Consume a Drive recovery code and synchronously update the encrypted remote backup."""
     value = str(code).strip()
-    if len(value) != 8 or not value.isdigit():
+    if re.fullmatch(r"\d{8}", value) is None:
         return False
-
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
         token_row = conn.execute(
@@ -616,17 +609,15 @@ def consume_drive_backup_code(db_path, username, code):
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
-        from googleapiclient.http import MediaIoBaseDownload
+        from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
         refresh_token = _fernet().decrypt(bytes(token_row[0])).decode("utf-8")
         config = _google_drive_oauth_config()
         section = config.get("web") or config.get("installed")
         credentials = Credentials(
-            token=None,
-            refresh_token=refresh_token,
+            token=None, refresh_token=refresh_token,
             token_uri="https://oauth2.googleapis.com/token",
-            client_id=section["client_id"],
-            client_secret=section["client_secret"],
+            client_id=section["client_id"], client_secret=section["client_secret"],
             scopes=["https://www.googleapis.com/auth/drive.file"],
         )
         credentials.refresh(Request())
@@ -634,59 +625,68 @@ def consume_drive_backup_code(db_path, username, code):
         opaque_name = hashlib.sha256(
             ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
         ).hexdigest() + ".enc"
-        query = f"name='{opaque_name}' and trashed=false"
         found = drive.files().list(
-            q=query, fields="files(id)", pageSize=1
+            q=f"name='{opaque_name}' and trashed=false",
+            fields="files(id)", pageSize=2,
         ).execute().get("files", [])
-        if not found:
-            return False
-
-        request = drive.files().get_media(fileId=found[0]["id"])
+        if len(found) != 1:
+            if not found:
+                return False
+            raise RuntimeError("Multiple matching encrypted recovery backups exist in Google Drive.")
+        file_id = found[0]["id"]
         output = io.BytesIO()
-        downloader = MediaIoBaseDownload(output, request)
+        downloader = MediaIoBaseDownload(output, drive.files().get_media(fileId=file_id))
         done = False
         while not done:
             _, done = downloader.next_chunk()
-        encrypted_blob = output.getvalue()
-        codes = json.loads(_fernet().decrypt(encrypted_blob).decode("utf-8"))
-        if not isinstance(codes, list) or not all(
-            isinstance(item, str) and len(item) == 8 and item.isdigit()
-            for item in codes
-        ):
-            raise ValueError("The encrypted Drive backup has an invalid recovery-code format.")
+        codes = _decrypt_and_validate_recovery_backup(output.getvalue(), expected_count=None)
+        if not any(secrets.compare_digest(item, value) for item in codes):
+            return False
+        remaining = [item for item in codes if not secrets.compare_digest(item, value)]
+        if not remaining:
+            raise RuntimeError("No unused recovery codes remain. Generate a new recovery-code set.")
+        encrypted_remaining = _fernet().encrypt(json.dumps(remaining).encode("utf-8"))
+        media = MediaIoBaseUpload(
+            io.BytesIO(encrypted_remaining), mimetype="application/octet-stream", resumable=False
+        )
+        drive.files().update(fileId=file_id, media_body=media).execute()
+        check = io.BytesIO()
+        check_dl = MediaIoBaseDownload(check, drive.files().get_media(fileId=file_id))
+        done = False
+        while not done:
+            _, done = check_dl.next_chunk()
+        if _decrypt_and_validate_recovery_backup(check.getvalue(), expected_count=None) != remaining:
+            raise RuntimeError("Google Drive recovery backup read-back verification failed.")
     except Exception as exc:
-        logging.warning("Encrypted recovery-code Google Drive download failed: %s", exc)
+        logging.warning("Encrypted Google Drive recovery-code update failed: %s", exc)
         raise RuntimeError(
-            f"Google Drive recovery backup could not be read ({type(exc).__name__})."
+            f"Google Drive recovery backup could not be updated and verified ({type(exc).__name__})."
         ) from exc
-
-    if not any(secrets.compare_digest(item, value) for item in codes):
-        return False
 
     ensure_recovery_table(db_path)
     ensure_encrypted_recovery_backup_table(db_path)
     with sqlite3.connect(db_path, timeout=10) as conn:
-        # INSERT OR IGNORE preserves any existing used_at marker for this code.
+        conn.execute("BEGIN IMMEDIATE")
         conn.executemany(
             "INSERT OR IGNORE INTO staff_recovery_codes(username, code_hash) VALUES (?, ?)",
             [(username, _recovery_code_hash(item)) for item in codes],
         )
-    if not consume_backup_code(db_path, username, value):
-        return False
-
-    remaining_codes = [item for item in codes if item != value]
-    encrypted_remaining = _fernet().encrypt(
-        json.dumps(remaining_codes).encode("utf-8")
-    )
-    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """UPDATE staff_recovery_codes SET used_at=CURRENT_TIMESTAMP
+               WHERE username=? COLLATE NOCASE AND code_hash=? AND used_at IS NULL""",
+            (username, _recovery_code_hash(value)),
+        )
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return False
         conn.execute(
             """INSERT INTO staff_recovery_code_backups(username, encrypted_codes)
                VALUES (?, ?)
-               ON CONFLICT(username) DO UPDATE SET
-                 encrypted_codes=excluded.encrypted_codes,
+               ON CONFLICT(username) DO UPDATE SET encrypted_codes=excluded.encrypted_codes,
                  updated_at=CURRENT_TIMESTAMP""",
             (username, encrypted_remaining),
         )
+        conn.commit()
     return True
 
 
