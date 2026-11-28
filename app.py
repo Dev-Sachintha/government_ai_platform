@@ -1268,8 +1268,11 @@ def _render_staff_recovery_management(db_path, username):
                 codes = auth_security.generate_recovery_codes(db_path, username)
                 st.session_state["staff_recovery_codes_once"] = codes
                 try:
-                    auth_security.sync_recovery_codes_to_drive(db_path, username)
-                    st.success("Encrypted backup saved to Google Drive.")
+                    verified_count = auth_security.sync_recovery_codes_to_drive(db_path, username)
+                    if verified_count:
+                        st.success("Verified: 10 Recovery Codes Securely Backed Up")
+                    else:
+                        st.warning("The encrypted local backup is valid, but Google Drive is not connected. Drive backup was not verified.")
                 except Exception as exc:
                     st.warning(f"Codes were generated, but Google Drive backup failed: {exc}")
                 log_event(db_path, username, "STAFF_RECOVERY_CODES_REGENERATED", "10 one-time recovery codes generated after TOTP verification.")
@@ -1308,7 +1311,7 @@ def _render_google_drive_backup_settings(db_path, username):
             if st.button("Test / upload encrypted backup now", key="drive_oauth_test_upload"):
                 try:
                     if auth_security.sync_recovery_codes_to_drive(db_path, username):
-                        st.success("Encrypted recovery-code backup uploaded.")
+                        st.success("Verified: 10 Recovery Codes Securely Backed Up")
                     else:
                         st.info("No saved recovery-code backup was found for this account yet.")
                 except Exception as exc:
