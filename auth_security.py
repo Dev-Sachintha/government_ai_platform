@@ -813,10 +813,38 @@ def consume_backup_code(db_path, username, code):
         if not row:
             conn.rollback()
             return False
-        conn.execute("UPDATE staff_recovery_codes SET used_at=CURRENT_TIMESTAMP WHERE id=? AND used_at IS NULL", (row[0],))
-        if conn.total_changes != 1:
+        cursor = conn.execute(
+            "UPDATE staff_recovery_codes SET used_at=CURRENT_TIMESTAMP WHERE id=? AND used_at IS NULL",
+            (row[0],),
+        )
+        if cursor.rowcount != 1:
             conn.rollback()
             return False
         conn.commit()
-        return True
+
+    # Keep the encrypted Drive payload in sync so a consumed code is not
+    # reintroduced if the account's local database is later restored.
+    try:
+        ensure_encrypted_recovery_backup_table(db_path)
+        with sqlite3.connect(db_path) as conn:
+            backup_row = conn.execute(
+                "SELECT encrypted_codes FROM staff_recovery_code_backups WHERE username=? COLLATE NOCASE",
+                (username,),
+            ).fetchone()
+        if backup_row:
+            saved_codes = json.loads(
+                _fernet().decrypt(bytes(backup_row[0])).decode("utf-8")
+            )
+            remaining_codes = [item for item in saved_codes if item != value]
+            encrypted_remaining = _fernet().encrypt(
+                json.dumps(remaining_codes).encode("utf-8")
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE staff_recovery_code_backups SET encrypted_codes=?, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE",
+                    (encrypted_remaining, username),
+                )
+    except Exception as exc:
+        logging.warning("Could not update local encrypted recovery-code backup after use: %s", type(exc).__name__)
+    return True
 
