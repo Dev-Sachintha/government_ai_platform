@@ -71,12 +71,15 @@
     try { localStorage.setItem('gov_pc_device_id', deviceId); } catch (e) {}
   }
   try { nameEl.value = localStorage.getItem('gov_pc_name') || ''; } catch (e) {}
+  keyEl.style.display = 'none';
+  keyEl.previousElementSibling.style.display = 'none';
   if (autoConfig.enabled) {
     nameEl.value = 'Signed-in staff account';
-    keyEl.style.display = 'none';
-    keyEl.previousElementSibling.style.display = 'none';
     nameEl.readOnly = true;
     $('status').textContent = 'Secure one-time setup ready. Click Start and approve the screen-sharing prompt.';
+  } else {
+    $('status').textContent = 'Open the one-time secure link generated from the Government AI Platform dashboard.';
+    startBtn.disabled = true;
   }
 
   let stream = null, track = null, capture = null, ticker = null, busy = false, lastHb = 0, key = '', stopping = false;
@@ -181,8 +184,8 @@
   }
 
   async function start() {
-    key = autoConfig.enabled ? '' : keyEl.value.trim();
-    if (!autoConfig.enabled && key.length < 32) { say('Enter the pairing key (it is at least 32 characters long).', true); return; }
+    if (!autoConfig.enabled) { say('This page needs a one-time secure link generated from the dashboard.', true); return; }
+    key = '';
     if (!nameEl.value.trim()) { say('Enter a name for this computer.', true); return; }
     try { localStorage.setItem('gov_pc_name', nameEl.value.trim()); } catch (e) {}
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
