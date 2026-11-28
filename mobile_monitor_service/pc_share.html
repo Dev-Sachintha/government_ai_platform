@@ -123,7 +123,7 @@
         android_version: '',
         network_type: cut((navigator.connection && navigator.connection.effectiveType) || 'Browser', 40),
         screen_resolution: cut(screen.width + 'x' + screen.height, 40),
-        login_user: cut(autoConfig.enabled ? autoConfig.login_user : (nameEl.value.trim() || 'User'), 80),
+        login_user: cut(nameEl.value.trim() || 'User', 80),
       }),
     });
     lastHb = Date.now();
