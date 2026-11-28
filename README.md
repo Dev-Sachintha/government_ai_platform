@@ -102,6 +102,26 @@ One-time setup:
 Notes: saving happens a few seconds after any change (use **Save now** to force it). Use a separate data repo,
 never the app repo, or every save would redeploy the app. Keep the repo private: it holds your data.
 
+## Encrypted Google Drive backup for 2FA recovery codes
+
+The platform stores recovery-code hashes for verification and an encrypted copy of the currently generated codes for backup. On every successful login, the existing encrypted backup is refreshed in a private Google Drive folder; login does **not** create new codes. Codes are encrypted with `AUTH_ENCRYPTION_KEY` before they are written to the local database or uploaded. The Drive filename is an opaque hash rather than the username.
+
+### One-time Google Drive setup
+
+1. In Google Cloud Console, create/select a project and enable **Google Drive API**.
+2. Create a **Service Account** and download its JSON key. Keep this key private.
+3. Create a dedicated private folder in Google Drive. Share that folder with the service account's `client_email` as **Editor**.
+4. Copy the folder ID from the folder URL (the text after `/folders/`).
+5. In Streamlit Cloud → Manage app → Settings → Secrets, add:
+   ```toml
+   GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON = """{ paste the complete service-account JSON here }"""
+   GOOGLE_DRIVE_BACKUP_FOLDER_ID = "your-private-folder-id"
+   ```
+   Replace the placeholder with the actual JSON. Keep `AUTH_ENCRYPTION_KEY` configured; it is also used to encrypt the backup.
+6. Install dependencies from `requirements.txt` and reboot the app.
+
+When a user first enrolls in 2FA or regenerates backup codes, the encrypted backup is saved automatically. On later successful logins, the encrypted backup is re-uploaded/updated. If Drive is not configured or upload fails, login remains available and the app displays a warning; check the app logs and secrets. Do not upload the service-account key or encryption key to GitHub.
+
 ## Talking avatar (🔊 Listen)
 When you press **🔊 Listen** under an AI answer, a picture panel (`static/avatar.jpg`) pops up in the
 bottom-right corner and the character's mouth moves while the browser reads the answer aloud.
