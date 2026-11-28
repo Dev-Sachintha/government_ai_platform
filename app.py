@@ -1155,8 +1155,8 @@ def check_password():
             )
             if verification_method == drive_backup_method:
                 st.caption(
-                    "Use one of your 8-digit recovery codes stored in the encrypted Google Drive backup. "
-                    "The platform administrator must connect Google Drive and your account must already have a backup."
+                    "Use an 8-digit recovery code from the encrypted backup in your own Google Drive. "
+                    "Connect your Google Drive from the account sidebar first and upload a backup before relying on this option."
                 )
         else:
             st.write(f"Set up Authenticator 2FA for **{username}** using the 6-digit code.")
@@ -1275,7 +1275,7 @@ def _render_staff_recovery_management(db_path, username):
 
 
 def _render_google_drive_backup_settings(db_path, username):
-    """Admin-only setup and OAuth callback handler for the platform Drive backup."""
+    """Per-account Google Drive connection and encrypted recovery-code backup settings."""
     with st.sidebar.expander("☁️ Google Drive Backup", expanded=False):
         params = st.query_params
         oauth_error = params.get("error")
@@ -1297,7 +1297,7 @@ def _render_google_drive_backup_settings(db_path, username):
                 st.error(f"Google Drive connection failed: {exc}")
                 st.query_params.clear()
 
-        connected = auth_security.google_drive_oauth_connected(db_path)
+        connected = auth_security.google_drive_oauth_connected(db_path, username)
         if connected:
             st.success("Google account connected.")
             if st.button("Test / upload encrypted backup now", key="drive_oauth_test_upload"):
@@ -1330,7 +1330,7 @@ def render_sidebar_controls(db_path, user_role):
         _show_staff_recovery_codes()
         _render_staff_recovery_management(db_path, username)
         _render_staff_recovery_email_setup(db_path, username)
-        if user_role == "admin":
+        if user_role in ("admin", "analyst", "user"):
             _render_google_drive_backup_settings(db_path, username)
 
         # Monitoring controls remain restricted to Admin and Analyst.
