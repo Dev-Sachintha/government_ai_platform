@@ -4,6 +4,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
+import stat
 
 from db_utils import REQUIRED_TABLES
 
@@ -69,42 +70,66 @@ def validate_and_restore_sqlite(
     try:
         file_bytes = uploaded_file.getvalue()
 
+        if len(file_bytes) > 100 * 1024 * 1024:
+            return False, "Backup upload is too large (maximum 100 MB)."
+
         if uploaded_file.name.lower().endswith(".zip"):
             with zipfile.ZipFile(BytesIO(file_bytes), "r") as zip_ref:
-                target_file = next(
-                    (
-                        f
-                        for f in zip_ref.namelist()
-                        if f.endswith("database.db") or f == "database.db"
-                    ),
-                    None,
-                )
-                if not target_file:
-                    return False, "Invalid archive: 'database.db' not found."
-                db_bytes = zip_ref.read(target_file)
+                entries = zip_ref.infolist()
+                if len(entries) > 100:
+                    return False, "Invalid archive: too many files."
+                candidates = []
+                for entry in entries:
+                    normalized = entry.filename.replace("\\", "/")
+                    parts = normalized.split("/")
+                    mode = (entry.external_attr >> 16) & 0xFFFF
+                    if normalized.startswith("/") or any(part in ("..", "") for part in parts if part != ""):
+                        return False, "Invalid archive: unsafe file path."
+                    if stat.S_ISLNK(mode):
+                        return False, "Invalid archive: symbolic links are not allowed."
+                    if entry.file_size > 512 * 1024 * 1024:
+                        return False, "Invalid archive: database entry exceeds 512 MB."
+                    if entry.filename == "database.db" or entry.filename.endswith("/database.db"):
+                        candidates.append(entry)
+                if len(candidates) != 1:
+                    return False, "Invalid archive: expected exactly one database.db file."
+                entry = candidates[0]
+                if entry.file_size == 0 or (entry.compress_size and entry.file_size / entry.compress_size > 200):
+                    return False, "Invalid archive: suspicious compression ratio."
+                with zip_ref.open(entry, "r") as source:
+                    db_bytes = source.read(512 * 1024 * 1024 + 1)
+                if len(db_bytes) > 512 * 1024 * 1024:
+                    return False, "Invalid archive: extracted database is too large."
         else:
             db_bytes = file_bytes
 
         if not db_bytes.startswith(b"SQLite format 3\x00"):
             return False, _not_a_database_message(db_bytes)
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as temp_db:
-            temp_db.write(db_bytes)
-            temp_db_path = temp_db.name
+        target_dir = os.path.dirname(os.path.abspath(db_path))
+        temp_db_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                prefix=".govai-restore-", suffix=".db", dir=target_dir, delete=False
+            ) as temp_db:
+                temp_db.write(db_bytes)
+                temp_db_path = temp_db.name
 
-        success, msg = _inspect_and_verify_sqlite(temp_db_path, expected_tables)
+            success, msg = _inspect_and_verify_sqlite(temp_db_path, expected_tables)
+            if not success:
+                return False, msg
 
-        if success:
-            # shutil.move works across filesystems (os.replace does not)
-            shutil.move(temp_db_path, db_path)
-            return (
-                True,
-                "Database passed integrity and schema validation! Restored successfully.",
-            )
-
-        if os.path.exists(temp_db_path):
-            os.unlink(temp_db_path)
-        return False, msg
+            # Same-directory atomic replacement prevents a partially-written live DB.
+            os.replace(temp_db_path, db_path)
+            temp_db_path = None
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path + suffix
+                if os.path.exists(sidecar):
+                    os.remove(sidecar)
+            return True, "Database passed integrity and schema validation! Restored successfully."
+        finally:
+            if temp_db_path and os.path.exists(temp_db_path):
+                os.remove(temp_db_path)
 
     except Exception as e:
         return False, f"Failed to process file: {e}"
