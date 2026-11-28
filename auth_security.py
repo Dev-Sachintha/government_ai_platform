@@ -360,17 +360,27 @@ def ensure_google_drive_oauth_table(db_path):
             CREATE TABLE IF NOT EXISTS google_drive_oauth_pending (
                 state_hash TEXT PRIMARY KEY,
                 username TEXT NOT NULL COLLATE NOCASE,
+                code_verifier_enc TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(google_drive_oauth_pending)")}
+        if "code_verifier_enc" not in columns:
+            conn.execute(
+                "ALTER TABLE google_drive_oauth_pending ADD COLUMN code_verifier_enc TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def google_drive_oauth_authorization_url(db_path, username):
     """Create a one-use OAuth authorization URL and keep its CSRF state in session."""
     from google_auth_oauthlib.flow import Flow
+    # Keep the PKCE verifier across Streamlit reruns and the Google redirect.
+    # It is encrypted at rest because the OAuth code exchange requires this secret.
+    code_verifier = secrets.token_urlsafe(64)
     flow = Flow.from_client_config(
         _google_drive_oauth_config(),
         scopes=["https://www.googleapis.com/auth/drive.file"],
+        code_verifier=code_verifier,
     )
     flow.redirect_uri = _google_drive_redirect_uri()
     url, state = flow.authorization_url(
@@ -380,11 +390,13 @@ def google_drive_oauth_authorization_url(db_path, username):
     )
     ensure_google_drive_oauth_table(db_path)
     state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    verifier_enc = _fernet().encrypt(code_verifier.encode("utf-8")).decode("ascii")
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM google_drive_oauth_pending WHERE created_at < datetime('now', '-15 minutes')")
         conn.execute(
-            "INSERT INTO google_drive_oauth_pending(state_hash, username) VALUES (?, ?)",
-            (state_hash, str(username)),
+            """INSERT INTO google_drive_oauth_pending(state_hash, username, code_verifier_enc)
+               VALUES (?, ?, ?)""",
+            (state_hash, str(username), verifier_enc),
         )
     return url
 
@@ -398,7 +410,7 @@ def complete_google_drive_oauth(db_path, code, state, username):
     state_hash = hashlib.sha256(str(state).encode("utf-8")).hexdigest()
     with sqlite3.connect(db_path) as conn:
         pending = conn.execute(
-            """SELECT username FROM google_drive_oauth_pending
+            """SELECT username, code_verifier_enc FROM google_drive_oauth_pending
                WHERE state_hash=? AND created_at >= datetime('now', '-15 minutes')""",
             (state_hash,),
         ).fetchone()
@@ -406,10 +418,17 @@ def complete_google_drive_oauth(db_path, code, state, username):
         raise RuntimeError("Google authorization state expired or was not recognized. Please connect again.")
     if str(pending[0]).casefold() != str(username).casefold():
         raise RuntimeError("Sign in with the same Admin account that started Google Drive connection.")
+    if not pending[1]:
+        raise RuntimeError("The PKCE verifier was not saved. Start Google Drive connection again.")
+    try:
+        code_verifier = _fernet().decrypt(str(pending[1]).encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError) as exc:
+        raise RuntimeError("The saved PKCE verifier could not be decrypted. Start Google Drive connection again.") from exc
     flow = Flow.from_client_config(
         _google_drive_oauth_config(),
         scopes=["https://www.googleapis.com/auth/drive.file"],
         state=str(state),
+        code_verifier=code_verifier,
     )
     flow.redirect_uri = _google_drive_redirect_uri()
     flow.fetch_token(code=code)
