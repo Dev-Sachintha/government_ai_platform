@@ -356,6 +356,13 @@ def ensure_google_drive_oauth_table(db_path):
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS google_drive_oauth_pending (
+                state_hash TEXT PRIMARY KEY,
+                username TEXT NOT NULL COLLATE NOCASE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
 
 def google_drive_oauth_authorization_url(db_path, username):
@@ -371,24 +378,38 @@ def google_drive_oauth_authorization_url(db_path, username):
         include_granted_scopes="true",
         prompt="consent",
     )
-    st.session_state["google_drive_oauth_state"] = state
-    st.session_state["google_drive_oauth_user"] = str(username)
+    ensure_google_drive_oauth_table(db_path)
+    state_hash = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM google_drive_oauth_pending WHERE created_at < datetime('now', '-15 minutes')")
+        conn.execute(
+            "INSERT INTO google_drive_oauth_pending(state_hash, username) VALUES (?, ?)",
+            (state_hash, str(username)),
+        )
     return url
 
 
 def complete_google_drive_oauth(db_path, code, state, username):
     """Validate OAuth state, exchange the code, and encrypt the refresh token at rest."""
     from google_auth_oauthlib.flow import Flow
-    expected = st.session_state.get("google_drive_oauth_state")
-    started_by = st.session_state.get("google_drive_oauth_user")
-    if not expected or not state or not secrets.compare_digest(str(expected), str(state)):
-        raise RuntimeError("Google authorization state did not match. Please start Connect Google Drive again.")
-    if str(started_by or "").casefold() != str(username).casefold():
-        raise RuntimeError("The signed-in account changed during Google authorization. Please reconnect.")
+    if not code or not state:
+        raise RuntimeError("Google did not return the required authorization code and state.")
+    ensure_google_drive_oauth_table(db_path)
+    state_hash = hashlib.sha256(str(state).encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_path) as conn:
+        pending = conn.execute(
+            """SELECT username FROM google_drive_oauth_pending
+               WHERE state_hash=? AND created_at >= datetime('now', '-15 minutes')""",
+            (state_hash,),
+        ).fetchone()
+    if not pending:
+        raise RuntimeError("Google authorization state expired or was not recognized. Please connect again.")
+    if str(pending[0]).casefold() != str(username).casefold():
+        raise RuntimeError("Sign in with the same Admin account that started Google Drive connection.")
     flow = Flow.from_client_config(
         _google_drive_oauth_config(),
         scopes=["https://www.googleapis.com/auth/drive.file"],
-        state=expected,
+        state=str(state),
     )
     flow.redirect_uri = _google_drive_redirect_uri()
     flow.fetch_token(code=code)
@@ -407,8 +428,8 @@ def complete_google_drive_oauth(db_path, code, state, username):
                  updated_at=CURRENT_TIMESTAMP""",
             (encrypted, str(username)),
         )
-    st.session_state.pop("google_drive_oauth_state", None)
-    st.session_state.pop("google_drive_oauth_user", None)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM google_drive_oauth_pending WHERE state_hash=?", (state_hash,))
     return True
 
 
