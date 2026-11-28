@@ -1258,6 +1258,50 @@ def _render_staff_recovery_management(db_path, username):
             else:
                 st.error("Invalid or expired authenticator code. Backup codes were not changed.")
 
+
+def _render_google_drive_backup_settings(db_path, username):
+    """Admin-only setup and OAuth callback handler for the platform Drive backup."""
+    with st.sidebar.expander("☁️ Google Drive Backup", expanded=False):
+        params = st.query_params
+        oauth_error = params.get("error")
+        oauth_code = params.get("code")
+        oauth_state = params.get("state")
+        if oauth_error:
+            st.error("Google Drive authorization was cancelled or denied.")
+            st.query_params.clear()
+        elif oauth_code:
+            try:
+                auth_security.complete_google_drive_oauth(
+                    db_path, str(oauth_code), str(oauth_state or ""), username
+                )
+                st.query_params.clear()
+                st.success("Google Drive connected successfully.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Google Drive connection failed: {exc}")
+                st.query_params.clear()
+
+        connected = auth_security.google_drive_oauth_connected(db_path)
+        if connected:
+            st.success("Google account connected.")
+            if st.button("Test / upload encrypted backup now", key="drive_oauth_test_upload"):
+                try:
+                    if auth_security.sync_recovery_codes_to_drive(db_path, username):
+                        st.success("Encrypted recovery-code backup uploaded.")
+                    else:
+                        st.info("No saved recovery-code backup was found for this account yet.")
+                except Exception as exc:
+                    st.error(f"Drive backup failed: {exc}")
+        else:
+            st.info("Connect your personal Google account once. The app will then refresh encrypted backups after successful logins.")
+            if st.button("Connect Google Drive", type="primary", key="connect_google_drive_oauth"):
+                try:
+                    authorization_url = auth_security.google_drive_oauth_authorization_url(db_path, username)
+                    st.link_button("Continue to Google authorization", authorization_url, use_container_width=True)
+                    st.caption("Open the authorization link, choose your Gmail account, and approve the requested Drive file access.")
+                except Exception as exc:
+                    st.error(str(exc))
+
 def render_sidebar_controls(db_path, user_role):
     with st.sidebar:
         username = st.session_state.get("current_user", "User")
@@ -1270,6 +1314,8 @@ def render_sidebar_controls(db_path, user_role):
         _show_staff_recovery_codes()
         _render_staff_recovery_management(db_path, username)
         _render_staff_recovery_email_setup(db_path, username)
+        if user_role == "admin":
+            _render_google_drive_backup_settings(db_path, username)
 
         # Monitoring controls remain restricted to Admin and Analyst.
         if user_role in ("admin", "analyst"):
