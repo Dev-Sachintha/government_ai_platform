@@ -524,6 +524,107 @@ def sync_recovery_codes_to_drive(db_path, username):
         ) from exc
 
 
+
+def consume_drive_backup_code(db_path, username, code):
+    """Restore an account's encrypted Drive recovery list and consume one code exactly once.
+
+    Drive stores only the Fernet-encrypted recovery-code list. Codes are imported
+    into the local one-time hash table (without replacing already-used rows),
+    then the submitted code is consumed and removed from the encrypted list.
+    """
+    value = str(code).strip()
+    if len(value) != 8 or not value.isdigit():
+        return False
+
+    folder_id = _setting("GOOGLE_DRIVE_BACKUP_FOLDER_ID").strip()
+    if not folder_id:
+        raise RuntimeError("Google Drive backup is not configured by the platform administrator.")
+    ensure_google_drive_oauth_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        token_row = conn.execute(
+            "SELECT refresh_token_enc FROM google_drive_oauth_tokens WHERE id=1"
+        ).fetchone()
+    if not token_row:
+        raise RuntimeError("Google Drive backup is not connected. Ask the platform administrator to connect it.")
+
+    try:
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+
+        refresh_token = _fernet().decrypt(bytes(token_row[0])).decode("utf-8")
+        config = _google_drive_oauth_config()
+        section = config.get("web") or config.get("installed")
+        credentials = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=section["client_id"],
+            client_secret=section["client_secret"],
+            scopes=["https://www.googleapis.com/auth/drive.file"],
+        )
+        credentials.refresh(Request())
+        drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        opaque_name = hashlib.sha256(
+            ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
+        ).hexdigest() + ".enc"
+        query = f"name='{opaque_name}' and '{folder_id}' in parents and trashed=false"
+        found = drive.files().list(
+            q=query, fields="files(id)", pageSize=1
+        ).execute().get("files", [])
+        if not found:
+            return False
+
+        request = drive.files().get_media(fileId=found[0]["id"])
+        output = io.BytesIO()
+        downloader = MediaIoBaseDownload(output, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        encrypted_blob = output.getvalue()
+        codes = json.loads(_fernet().decrypt(encrypted_blob).decode("utf-8"))
+        if not isinstance(codes, list) or not all(
+            isinstance(item, str) and len(item) == 8 and item.isdigit()
+            for item in codes
+        ):
+            raise ValueError("The encrypted Drive backup has an invalid recovery-code format.")
+    except Exception as exc:
+        logging.warning("Encrypted recovery-code Google Drive download failed: %s", exc)
+        raise RuntimeError(
+            f"Google Drive recovery backup could not be read ({type(exc).__name__})."
+        ) from exc
+
+    if not any(secrets.compare_digest(item, value) for item in codes):
+        return False
+
+    ensure_recovery_table(db_path)
+    ensure_encrypted_recovery_backup_table(db_path)
+    with sqlite3.connect(db_path, timeout=10) as conn:
+        # INSERT OR IGNORE preserves any existing used_at marker for this code.
+        conn.executemany(
+            "INSERT OR IGNORE INTO staff_recovery_codes(username, code_hash) VALUES (?, ?)",
+            [(username, _recovery_code_hash(item)) for item in codes],
+        )
+    if not consume_backup_code(db_path, username, value):
+        return False
+
+    remaining_codes = [item for item in codes if item != value]
+    encrypted_remaining = _fernet().encrypt(
+        json.dumps(remaining_codes).encode("utf-8")
+    )
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO staff_recovery_code_backups(username, encrypted_codes)
+               VALUES (?, ?)
+               ON CONFLICT(username) DO UPDATE SET
+                 encrypted_codes=excluded.encrypted_codes,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (username, encrypted_remaining),
+        )
+    return True
+
+
 def identify_recovery_code(db_path, code):
     ensure_recovery_table(db_path)
     with sqlite3.connect(db_path) as conn:
