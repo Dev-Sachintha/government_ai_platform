@@ -102,7 +102,7 @@ def exchange_pc_launch(payload: PCSessionRequest):
 
 @app.get("/pc", response_class=HTMLResponse)
 def pc_share_page(launch: Optional[str] = Query(default=None, max_length=100)):
-    """Share page. Auto tickets prefill the pairing key and account name once; manual mode remains available."""
+    """Share page. Auto tickets exchange for a short-lived, device-scoped session; manual mode remains available."""
     page = PC_PAGE.read_text(encoding="utf-8")
     auto_config = {"enabled": bool(launch), "launch": launch or "", "login_user": ""}
     page = page.replace("/*__GOV_AUTO_CONFIG__*/", "window.GOV_AUTO_CONFIG = " + json.dumps(auto_config) + ";")
