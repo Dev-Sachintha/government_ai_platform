@@ -17,12 +17,22 @@ frames = {}
 pc_metrics = {}
 # Short-lived one-time launch tickets; values are held in memory and never expose the API key in a URL.
 pc_launch_tickets = {}
+pc_sessions = {}
 FRAME_TTL_SECONDS = 180
 PC_LAUNCH_TTL_SECONDS = 300
+PC_SESSION_TTL_SECONDS = 1800
 
-def authorize(value: Optional[str]):
-    if not value or not secrets.compare_digest(value, API_KEY):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def authorize(value: Optional[str], device_id: Optional[str] = None, allow_pc_session: bool = False):
+    if value and secrets.compare_digest(value, API_KEY):
+        return
+    if allow_pc_session and value and device_id:
+        with lock:
+            session = pc_sessions.get(value)
+            if session and session["expires_at"] > time.time() and secrets.compare_digest(session["device_id"], device_id):
+                return
+            if session and session["expires_at"] <= time.time():
+                pc_sessions.pop(value, None)
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 class Heartbeat(BaseModel):
     device_id: str = Field(min_length=8, max_length=80)
@@ -67,21 +77,34 @@ def create_pc_launch(payload: PCLaunchRequest, x_monitor_key: Optional[str] = He
     return {"url": "/pc?launch=" + ticket, "expires_in": PC_LAUNCH_TTL_SECONDS}
 
 
+class PCSessionRequest(BaseModel):
+    launch: str = Field(min_length=32, max_length=100)
+    device_id: str = Field(min_length=8, max_length=80)
+
+
+@app.post("/v1/pc/session")
+def exchange_pc_launch(payload: PCSessionRequest):
+    """Exchange a one-time launch ticket for a short-lived, device-scoped browser token."""
+    now = time.time()
+    with lock:
+        ticket_data = pc_launch_tickets.pop(payload.launch, None)
+        if not ticket_data or ticket_data["expires_at"] <= now:
+            raise HTTPException(status_code=401, detail="Launch link expired or already used.")
+        token = secrets.token_urlsafe(32)
+        pc_sessions[token] = {"device_id": payload.device_id, "login_user": ticket_data["login_user"],
+                              "expires_at": now + PC_SESSION_TTL_SECONDS}
+        for old_token, item in list(pc_sessions.items()):
+            if item["expires_at"] <= now:
+                pc_sessions.pop(old_token, None)
+    return {"session_token": token, "expires_in": PC_SESSION_TTL_SECONDS,
+            "login_user": ticket_data["login_user"]}
+
+
 @app.get("/pc", response_class=HTMLResponse)
 def pc_share_page(launch: Optional[str] = Query(default=None, max_length=100)):
     """Share page. Auto tickets prefill the pairing key and account name once; manual mode remains available."""
     page = PC_PAGE.read_text(encoding="utf-8")
-    auto_config = {"enabled": False, "pairing_key": "", "login_user": ""}
-    if launch:
-        with lock:
-            ticket_data = pc_launch_tickets.pop(launch, None)  # one-time use
-        if not ticket_data or ticket_data["expires_at"] <= time.time():
-            raise HTTPException(status_code=401, detail="This automatic sharing link has expired or was already used. Generate a new one from Screen Monitor.")
-        auto_config = {
-            "enabled": True,
-            "pairing_key": API_KEY,
-            "login_user": ticket_data["login_user"],
-        }
+    auto_config = {"enabled": bool(launch), "launch": launch or "", "login_user": ""}
     page = page.replace("/*__GOV_AUTO_CONFIG__*/", "window.GOV_AUTO_CONFIG = " + json.dumps(auto_config) + ";")
     return HTMLResponse(
         page,
@@ -95,7 +118,7 @@ def health():
 
 @app.post("/v1/heartbeat")
 def heartbeat(payload: Heartbeat, x_monitor_key: Optional[str] = Header(default=None)):
-    authorize(x_monitor_key)
+    authorize(x_monitor_key, payload.device_id, allow_pc_session=True)
     now = datetime.now(timezone.utc).isoformat()
     with lock:
         item = payload.model_dump()
@@ -107,7 +130,7 @@ def heartbeat(payload: Heartbeat, x_monitor_key: Optional[str] = Header(default=
 
 @app.post("/v1/frame")
 async def upload_frame(device_id: str = Form(...), frame: UploadFile = File(...), x_monitor_key: Optional[str] = Header(default=None)):
-    authorize(x_monitor_key)
+    authorize(x_monitor_key, device_id, allow_pc_session=True)
     if len(device_id) < 8 or len(device_id) > 80:
         raise HTTPException(status_code=400, detail="Invalid device id")
     if frame.content_type not in ("image/jpeg", "image/jpg"):
@@ -170,7 +193,7 @@ def latest_frame(device_id: str, x_monitor_key: Optional[str] = Header(default=N
 
 @app.delete("/v1/devices/{device_id}")
 def forget_device(device_id: str, x_monitor_key: Optional[str] = Header(default=None)):
-    authorize(x_monitor_key)
+    authorize(x_monitor_key, device_id, allow_pc_session=True)
     with lock:
         devices.pop(device_id, None)
         frames.pop(device_id, None)
