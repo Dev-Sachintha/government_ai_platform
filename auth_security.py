@@ -475,17 +475,54 @@ def google_drive_oauth_connected(db_path, username):
     return bool(row)
 
 
+def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
+    """Decrypt a backup and validate its one-time recovery-code payload."""
+    try:
+        decoded = _fernet().decrypt(bytes(encrypted_blob)).decode("utf-8")
+        codes = json.loads(decoded)
+    except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ValueError("Encrypted recovery backup could not be decrypted or parsed.") from exc
+
+    if (
+        not isinstance(codes, list)
+        or len(codes) != expected_count
+        or any(not isinstance(code, str) or re.fullmatch(r"\\d{8}", code) is None for code in codes)
+        or len(set(codes)) != expected_count
+    ):
+        raise ValueError(
+            f"Recovery backup must contain exactly {expected_count} unique 8-digit codes."
+        )
+    return codes
+
+
+def verify_local_recovery_backup(db_path, username):
+    """Return the number of valid codes in this account's encrypted local backup."""
+    ensure_encrypted_recovery_backup_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT encrypted_codes FROM staff_recovery_code_backups WHERE username=? COLLATE NOCASE",
+            (str(username),),
+        ).fetchone()
+    if not row:
+        raise RuntimeError("No encrypted recovery-code backup exists for this account.")
+    return len(_decrypt_and_validate_recovery_backup(row[0], expected_count=10))
+
+
 def sync_recovery_codes_to_drive(db_path, username):
-    """Upload the encrypted recovery-code blob using the owner's Google OAuth grant."""
+    """Upload the encrypted backup, download it again, and verify all ten codes."""
     # Each user's backup lives in their own Drive root; no shared folder ID needed.
     ensure_encrypted_recovery_backup_table(db_path)
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
             "SELECT encrypted_codes FROM staff_recovery_code_backups WHERE username=? COLLATE NOCASE",
-            (username,),
+            (str(username),),
         ).fetchone()
     if not row:
         return False
+
+    # Validate locally before sending anything to Drive. Plaintext is never uploaded.
+    local_codes = _decrypt_and_validate_recovery_backup(row[0], expected_count=10)
+
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
         token_row = conn.execute(
@@ -498,7 +535,7 @@ def sync_recovery_codes_to_drive(db_path, username):
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
         from googleapiclient.discovery import build
-        from googleapiclient.http import MediaIoBaseUpload
+        from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
         refresh_token = _fernet().decrypt(bytes(token_row[0])).decode("utf-8")
         config = _google_drive_oauth_config()
@@ -525,17 +562,32 @@ def sync_recovery_codes_to_drive(db_path, username):
             resumable=False
         )
         if found:
-            drive.files().update(fileId=found[0]["id"], media_body=media).execute()
+            file_id = found[0]["id"]
+            drive.files().update(fileId=file_id, media_body=media).execute()
         else:
-            drive.files().create(
+            created = drive.files().create(
                 body={"name": opaque_name},
                 media_body=media, fields="id"
             ).execute()
+            file_id = created["id"]
+
+        # Read back the exact Drive object and verify its encrypted payload.
+        request = drive.files().get_media(fileId=file_id)
+        downloaded = io.BytesIO()
+        downloader = MediaIoBaseDownload(downloaded, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        remote_codes = _decrypt_and_validate_recovery_backup(
+            downloaded.getvalue(), expected_count=10
+        )
+        if set(remote_codes) != set(local_codes):
+            raise ValueError("The uploaded Drive backup does not match the local recovery-code set.")
         return True
     except Exception as exc:
-        logging.warning("Encrypted recovery-code Google Drive OAuth upload failed: %s", exc)
+        logging.warning("Encrypted recovery-code Google Drive upload/verification failed: %s", exc)
         raise RuntimeError(
-            f"Google Drive OAuth upload failed ({type(exc).__name__}). Check OAuth consent and app logs."
+            f"Google Drive backup upload or verification failed ({type(exc).__name__})."
         ) from exc
 
 
