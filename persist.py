@@ -98,21 +98,22 @@ def _db_sig(db_path):
 
 def _snapshot_bytes(db_path) -> bytes:
     """Consistent copy of the live DB, gzip-compressed."""
-    tmp = tempfile.mktemp(suffix=".db")
-    src = sqlite3.connect(db_path)
-    dst = sqlite3.connect(tmp)
+    fd, tmp_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     try:
-        src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
-    try:
-        with open(tmp, "rb") as fh:
+        src = sqlite3.connect(db_path)
+        dst = sqlite3.connect(tmp_path)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        with open(tmp_path, "rb") as fh:
             return gzip.compress(fh.read(), compresslevel=6)
     finally:
         try:
-            os.remove(tmp)
-        except OSError:
+            os.remove(tmp_path)
+        except FileNotFoundError:
             pass
 
 
@@ -167,13 +168,13 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
         raw = requests.get(_url(cfg), headers=_headers(cfg, raw=True), params={"ref": cfg["branch"]}, timeout=TIMEOUT)
         raw.raise_for_status()
         data = gzip.decompress(raw.content)
-        tmp = tempfile.mktemp(suffix=".db")
-        with open(tmp, "wb") as fh:
-            fh.write(data)
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_file:
+            tmp_file.write(data)
+            tmp_path = tmp_file.name
         try:
-            if not _valid_sqlite(tmp):
+            if not _valid_sqlite(tmp_path):
                 raise ValueError("saved copy failed the integrity check")
-            src = sqlite3.connect(tmp)
+            src = sqlite3.connect(tmp_path)
             dst = sqlite3.connect(db_path)
             try:
                 src.backup(dst)
@@ -182,8 +183,8 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
                 src.close()
         finally:
             try:
-                os.remove(tmp)
-            except OSError:
+                os.remove(tmp_path)
+            except FileNotFoundError:
                 pass
         with _lock:
             _state["restore_ok"] = True
