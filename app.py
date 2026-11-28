@@ -36,8 +36,8 @@ from web_sources import add_or_refresh_source, delete_source, list_sources, vali
 
 TIMEOUT_SECONDS = 300
 
-DEFAULT_ADMIN_PASSWORD = "SecurePass123!"
-DEFAULT_ANALYST_PASSWORD = "AnalystPass123!"
+# Never ship usable default credentials in a public repository.
+# Initial staff accounts are created only when explicit deployment secrets exist.
 
 
 def _read_secrets(keys):
@@ -59,14 +59,13 @@ def _load_users():
     analyst_pw = str(
         sec.get("ANALYST_PASSWORD") or os.environ.get("ANALYST_PASSWORD") or ""
     )
-    using_defaults = not (admin_pw and analyst_pw)
-    return (
-        {
-            "admin": (admin_pw or DEFAULT_ADMIN_PASSWORD, "admin"),
-            "analyst": (analyst_pw or DEFAULT_ANALYST_PASSWORD, "analyst"),
-        },
-        using_defaults,
-    )
+    configured_users = {}
+    if admin_pw:
+        configured_users["admin"] = (admin_pw, "admin")
+    if analyst_pw:
+        configured_users["analyst"] = (analyst_pw, "analyst")
+    missing_credentials = not (admin_pw and analyst_pw)
+    return configured_users, missing_credentials
 
 
 MOCK_USERS, USING_DEFAULT_PASSWORDS = _load_users()
