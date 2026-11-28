@@ -1144,24 +1144,32 @@ def check_password():
             if st.session_state.get("staff_enroll_email_verified"):
                 st.success("Verified recovery email: " + st.session_state["staff_enroll_email_verified"])
         verification_method = "Authenticator app"
+        drive_backup_method = "Encrypted recovery-code backup (Google Drive)"
         if pending["mode"] == "verify":
-            verification_options = ["Authenticator app", "Backup Code"]
+            verification_options = ["Authenticator app", "Backup Code", drive_backup_method]
             verification_method = st.radio(
                 "Choose a verification method",
                 verification_options,
                 horizontal=False,
                 key="login_2fa_method",
             )
+            if verification_method == drive_backup_method:
+                st.caption(
+                    "Use one of your 8-digit recovery codes stored in the encrypted Google Drive backup. "
+                    "The platform administrator must connect Google Drive and your account must already have a backup."
+                )
         else:
             st.write(f"Set up Authenticator 2FA for **{username}** using the 6-digit code.")
-        code_max = 8 if verification_method == "Backup Code" else 10
-        code_label = "8-digit backup code" if verification_method == "Backup Code" else "Verification code"
+        is_backup_method = verification_method in ("Backup Code", drive_backup_method)
+        code_max = 8 if is_backup_method else 10
+        code_label = "8-digit recovery code" if is_backup_method else "Verification code"
         with st.form("staff_2fa_form"):
-            code = st.text_input(code_label, max_chars=code_max, placeholder="00000000" if verification_method == "Backup Code" else "000000")
+            code = st.text_input(code_label, max_chars=code_max, placeholder="00000000" if is_backup_method else "000000")
             submitted = st.form_submit_button("Verify and continue", type="primary")
         if submitted:
             valid = False
             totp_status = "invalid"
+            drive_backup_error = ""
             if pending["mode"] == "enroll" and len(code.strip()) == 6 and code.strip().isdigit():
                 valid = auth_security.enable_totp(
                     "database.db", username,
@@ -1170,6 +1178,11 @@ def check_password():
             elif pending["mode"] == "verify":
                 if verification_method == "Backup Code":
                     valid = auth_security.consume_backup_code("database.db", username, code.strip())
+                elif verification_method == drive_backup_method:
+                    try:
+                        valid = auth_security.consume_drive_backup_code("database.db", username, code.strip())
+                    except Exception as exc:
+                        drive_backup_error = str(exc)
                 elif len(code.strip()) == 6 and code.strip().isdigit():
                     totp_status = auth_security.verify_totp_detailed("database.db", username, code.strip())
                     valid = totp_status == "valid"
@@ -1191,7 +1204,9 @@ def check_password():
                 st.rerun()
             else:
                 attempts, otp_newly_blocked = _record_login_failure("database.db", otp_guard_key, otp_guard_type)
-                if totp_status == "already_used":
+                if drive_backup_error:
+                    st.error(f"Encrypted Google Drive backup verification failed: {drive_backup_error}")
+                elif totp_status == "already_used":
                     st.error("This authenticator code has already been used. Wait for the next 30-second code and submit it once.")
                 else:
                     st.error("Invalid or expired verification code. Check the selected method and code, then try again.")
