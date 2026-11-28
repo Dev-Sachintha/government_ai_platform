@@ -104,23 +104,26 @@ never the app repo, or every save would redeploy the app. Keep the repo private:
 
 ## Encrypted Google Drive backup for 2FA recovery codes
 
-The platform stores recovery-code hashes for verification and an encrypted copy of the currently generated codes for backup. On every successful login, the existing encrypted backup is refreshed in a private Google Drive folder; login does **not** create new codes. Codes are encrypted with `AUTH_ENCRYPTION_KEY` before they are written to the local database or uploaded. The Drive filename is an opaque hash rather than the username.
+The platform stores recovery-code hashes for verification and an encrypted copy of the currently generated codes for backup. The encrypted backup is uploaded to a private folder in the administrator's personal Google Drive using **OAuth 2.0 user authorization**. No service account is used. The Google refresh token and recovery-code backup are encrypted with `AUTH_ENCRYPTION_KEY` before being stored in SQLite. On successful logins, the existing encrypted backup is refreshed; login does not generate new codes.
 
-### One-time Google Drive setup
+### One-time Google Drive OAuth setup
 
-1. In Google Cloud Console, create/select a project and enable **Google Drive API**.
-2. Create a **Service Account** and download its JSON key. Keep this key private.
-3. Create a dedicated private folder in Google Drive. Share that folder with the service account's `client_email` as **Editor**.
-4. Copy the folder ID from the folder URL (the text after `/folders/`).
-5. In Streamlit Cloud → Manage app → Settings → Secrets, add:
+1. In Google Cloud Console, select the project and enable **Google Drive API**.
+2. Open **Google Auth Platform → Branding** and configure the app name and support email. Configure the audience as **External**. If the app is in Testing mode, add the Gmail account that will connect Drive under **Test users**.
+3. Open **Google Auth Platform → Clients → Create Client**. Choose **Web application**.
+4. Add your exact Streamlit app URL (for example `https://your-app-name.streamlit.app`) under **Authorized redirect URIs**. Do not add a trailing slash unless your actual app URL uses one. Create the client and download its JSON file.
+5. In your own Google Drive, create a private folder for encrypted backups and copy its folder ID from the URL after `/folders/`.
+6. In Streamlit Cloud → Manage app → Settings → Secrets, add:
    ```toml
-   GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON = """{ paste the complete service-account JSON here }"""
+   GOOGLE_DRIVE_OAUTH_CLIENT_JSON = """{ paste the complete downloaded OAuth web-client JSON here }"""
+   GOOGLE_DRIVE_OAUTH_REDIRECT_URI = "https://your-app-name.streamlit.app"
    GOOGLE_DRIVE_BACKUP_FOLDER_ID = "your-private-folder-id"
    ```
-   Replace the placeholder with the actual JSON. Keep `AUTH_ENCRYPTION_KEY` configured; it is also used to encrypt the backup.
-6. Install dependencies from `requirements.txt` and reboot the app.
+   Keep `AUTH_ENCRYPTION_KEY` configured. Never put the OAuth client JSON or encryption key in GitHub.
+7. Save and reboot the Streamlit app. Sign in as an Admin, open **☁️ Google Drive Backup** in the sidebar, click **Connect Google Drive**, continue to Google, choose the correct Gmail account, and approve the requested Drive file access.
+8. Return to the app. The admin panel should show **Google account connected**. Click **Test / upload encrypted backup now** to upload the existing encrypted backup.
 
-When a user first enrolls in 2FA or regenerates backup codes, the encrypted backup is saved automatically. On later successful logins, the encrypted backup is re-uploaded/updated. If Drive is not configured or upload fails, login remains available and the app displays a warning; check the app logs and secrets. Do not upload the service-account key or encryption key to GitHub.
+The OAuth connection is stored encrypted in the app database and uses Google's offline refresh token so backups can be updated after the user has left the app. If the OAuth consent screen remains in Testing mode, Google may expire refresh tokens after seven days; publish the consent app appropriately for ongoing use and complete any verification Google requires for the requested scopes. The app only uploads encrypted `.enc` files with opaque filenames. If Drive is not connected, login remains available and backup upload is skipped.
 
 ## Talking avatar (🔊 Listen)
 When you press **🔊 Listen** under an AI answer, a picture panel (`static/avatar.jpg`) pops up in the
