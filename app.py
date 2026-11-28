@@ -142,8 +142,13 @@ def _make_backup_bytes(db_path):
     try:
         with tempfile.NamedTemporaryFile(prefix="govai-backup-", suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
-        with sqlite3.connect(db_path, timeout=30) as src, sqlite3.connect(tmp_path) as dst:
+        src = sqlite3.connect(db_path, timeout=30)
+        dst = sqlite3.connect(tmp_path)
+        try:
             src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
         with open(tmp_path, "rb") as fh:
             return fh.read()
     finally:
