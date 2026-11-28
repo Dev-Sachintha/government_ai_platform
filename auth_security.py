@@ -479,7 +479,7 @@ def google_drive_oauth_connected(db_path, username):
 
 
 def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
-    """Decrypt and validate an encrypted recovery list (10 initially, then 1-9)."""
+    """Decrypt and validate an encrypted recovery list (10 initially, then 0-9 remaining)."""
     try:
         decoded = _fernet().decrypt(bytes(encrypted_blob)).decode("utf-8")
         codes = json.loads(decoded)
@@ -511,7 +511,7 @@ def verify_local_recovery_backup(db_path, username):
 
 
 def sync_recovery_codes_to_drive(db_path, username):
-    """Upload the encrypted backup, download it again, and verify all ten codes."""
+    """Upload the encrypted backup, download it again, and verify every remaining code."""
     # Each user's backup lives in their own Drive root; no shared folder ID needed.
     ensure_encrypted_recovery_backup_table(db_path)
     with sqlite3.connect(db_path) as conn:
