@@ -451,16 +451,10 @@ def _pc_monitor_live(base_url: str, api_key: str, key_prefix: str) -> None:
 
     if not computers:
         st.caption("No computer is sharing its screen with you right now.")
-        _render_share_invite(
-            kind="computer",
-            link_label="🖥️ Open the sharing page",
-            link_url=f"{base_url}/pc",
-            steps=[
-                "Open the link above in Chrome or Edge, on the computer you want to share.",
-                "Type a name for the computer and enter the pairing key.",
-                "Press **Start sharing this screen**, then choose a screen/window and approve the browser prompt.",
-                "It appears here within a few seconds. Press **Stop sharing** at any time to end it.",
-            ],
+        st.info(
+            "To connect a computer securely, use **⚡ Auto Screen Monitoring** above to generate "
+            "a one-time link. The browser receives a short-lived, device-scoped session token; "
+            "the service-wide API key is never placed in the sharing page."
         )
         return
 
