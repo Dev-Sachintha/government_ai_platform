@@ -137,19 +137,21 @@ def _md_escape(text: str) -> str:
 
 
 def _make_backup_bytes(db_path):
-    tmp = tempfile.mktemp(suffix=".db")
-    src = sqlite3.connect(db_path)
-    dst = sqlite3.connect(tmp)
+    """Return a consistent SQLite backup without an unsafe temporary filename."""
+    tmp_path = None
     try:
-        src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
-    try:
-        with open(tmp, "rb") as fh:
+        with tempfile.NamedTemporaryFile(prefix="govai-backup-", suffix=".db", delete=False) as tmp:
+            tmp_path = tmp.name
+        with sqlite3.connect(db_path, timeout=30) as src, sqlite3.connect(tmp_path) as dst:
+            src.backup(dst)
+        with open(tmp_path, "rb") as fh:
             return fh.read()
     finally:
-        os.remove(tmp)
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _password_digest(password: str, salt: str) -> str:
