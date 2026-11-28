@@ -1274,6 +1274,7 @@ def _render_google_drive_backup_settings(db_path, username):
                 auth_security.complete_google_drive_oauth(
                     db_path, str(oauth_code), str(oauth_state or ""), username
                 )
+                save_now()
                 st.query_params.clear()
                 st.success("Google Drive connected successfully.")
                 st.rerun()
