@@ -16,6 +16,7 @@ No Streamlit calls here: safe to run in a background thread.
 """
 import base64
 import gzip
+import io
 import os
 import sqlite3
 import tempfile
@@ -102,8 +103,13 @@ def _snapshot_bytes(db_path) -> bytes:
     try:
         with tempfile.NamedTemporaryFile(prefix="govai-snapshot-", suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
-        with sqlite3.connect(db_path, timeout=30) as src, sqlite3.connect(tmp_path) as dst:
+        src = sqlite3.connect(db_path, timeout=30)
+        dst = sqlite3.connect(tmp_path)
+        try:
             src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
         with open(tmp_path, "rb") as fh:
             return gzip.compress(fh.read(), compresslevel=6)
     finally:
@@ -166,7 +172,7 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
         raw.raise_for_status()
         if len(raw.content) > MAX_UPLOAD_BYTES:
             raise ValueError("saved database archive exceeds the configured compressed-size limit")
-        with gzip.GzipFile(fileobj=__import__("io").BytesIO(raw.content)) as archive:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw.content)) as archive:
             data = archive.read(512 * 1024 * 1024 + 1)
         if len(data) > 512 * 1024 * 1024:
             raise ValueError("saved database exceeds the 512 MB uncompressed-size limit")
@@ -177,8 +183,13 @@ def restore_if_needed(cfg: dict | None, db_path: str) -> None:
                 tmp.write(data)
             if not _valid_sqlite(tmp_path):
                 raise ValueError("saved copy failed the integrity check or required-table check")
-            with sqlite3.connect(tmp_path, timeout=30) as src, sqlite3.connect(db_path, timeout=30) as dst:
+            src = sqlite3.connect(tmp_path, timeout=30)
+            dst = sqlite3.connect(db_path, timeout=30)
+            try:
                 src.backup(dst)
+            finally:
+                dst.close()
+                src.close()
         finally:
             if tmp_path:
                 try:
