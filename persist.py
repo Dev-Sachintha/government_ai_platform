@@ -146,7 +146,7 @@ def _valid_sqlite(path) -> bool:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table';")}
         finally:
             conn.close()
-        return ok and "audit_logs" in tables
+        return ok and {"audit_logs", "app_users"}.issubset(tables)
     except Exception:
         return False
 
