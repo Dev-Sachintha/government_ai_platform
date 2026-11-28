@@ -7,6 +7,7 @@ Required secrets:
 """
 import hashlib
 import io
+import json
 import logging
 import os
 import re
@@ -287,20 +288,96 @@ def ensure_recovery_table(db_path):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_recovery_username ON staff_recovery_codes(username)")
 
 
+def ensure_encrypted_recovery_backup_table(db_path):
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS staff_recovery_code_backups (
+                username TEXT PRIMARY KEY COLLATE NOCASE,
+                encrypted_codes BLOB NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+
 def generate_recovery_codes(db_path, username, count=10):
-    """Generate ten one-time 8-digit backup codes; plaintext is returned only once."""
+    """Generate one-time codes and keep an encrypted copy for secure Drive backup."""
     ensure_recovery_table(db_path)
+    ensure_encrypted_recovery_backup_table(db_path)
     codes = set()
     while len(codes) < count:
         codes.add(f"{secrets.randbelow(100000000):08d}")
     codes = sorted(codes)
+    encrypted_codes = _fernet().encrypt(json.dumps(codes).encode("utf-8"))
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM staff_recovery_codes WHERE username=? COLLATE NOCASE", (username,))
         conn.executemany(
             "INSERT INTO staff_recovery_codes(username, code_hash) VALUES (?, ?)",
             [(username, _recovery_code_hash(code)) for code in codes],
         )
+        conn.execute(
+            """INSERT INTO staff_recovery_code_backups(username, encrypted_codes)
+               VALUES (?, ?)
+               ON CONFLICT(username) DO UPDATE SET
+                 encrypted_codes=excluded.encrypted_codes,
+                 updated_at=CURRENT_TIMESTAMP""",
+            (username, encrypted_codes),
+        )
     return codes
+
+
+def sync_recovery_codes_to_drive(db_path, username):
+    """Upload the already-encrypted backup to a configured Google Drive folder."""
+    service_account_json = _setting("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON").strip()
+    folder_id = _setting("GOOGLE_DRIVE_BACKUP_FOLDER_ID").strip()
+    if not service_account_json or not folder_id:
+        raise RuntimeError(
+            "Google Drive backup is not configured. Add the service account JSON and backup folder ID to Streamlit Secrets."
+        )
+    ensure_encrypted_recovery_backup_table(db_path)
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT encrypted_codes FROM staff_recovery_code_backups WHERE username=? COLLATE NOCASE",
+            (username,),
+        ).fetchone()
+    if not row:
+        return False
+    try:
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseUpload
+
+        info = json.loads(service_account_json)
+        credentials = Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive"]
+        )
+        drive = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        opaque_name = hashlib.sha256(
+            ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
+        ).hexdigest() + ".enc"
+        query = (
+            f"name='{opaque_name}' and '{folder_id}' in parents "
+            "and trashed=false"
+        )
+        found = drive.files().list(
+            q=query, fields="files(id,name)", pageSize=5
+        ).execute().get("files", [])
+        media = MediaIoBaseUpload(
+            io.BytesIO(bytes(row[0])), mimetype="application/octet-stream",
+            resumable=False
+        )
+        if found:
+            drive.files().update(
+                fileId=found[0]["id"], media_body=media
+            ).execute()
+        else:
+            drive.files().create(
+                body={"name": opaque_name, "parents": [folder_id]},
+                media_body=media, fields="id"
+            ).execute()
+        return True
+    except Exception as exc:
+        logging.warning("Encrypted recovery-code Drive backup failed: %s", exc)
+        raise RuntimeError("Encrypted Google Drive backup upload failed.") from exc
 
 
 def identify_recovery_code(db_path, code):
