@@ -6,6 +6,7 @@ Required secrets:
   SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL.
 """
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -270,8 +271,79 @@ def send_security_alert(event, username, details):
         return False
 
 
+def _legacy_recovery_code_hash(code):
+    """Legacy unkeyed digest, retained only to recognize codes created by older releases."""
+    return hashlib.sha256(
+        ("govai-staff-recovery:" + str(code).strip().upper()).encode("utf-8")
+    ).hexdigest()
+
+
 def _recovery_code_hash(code):
-    return hashlib.sha256(("govai-staff-recovery:" + str(code).strip().upper()).encode("utf-8")).hexdigest()
+    """Keyed digest prevents offline guessing if the user database is disclosed."""
+    key = _setting("AUTH_ENCRYPTION_KEY").strip()
+    if not key:
+        raise RuntimeError("AUTH_ENCRYPTION_KEY is required to protect recovery codes.")
+    pepper = hashlib.sha256(("govai-recovery-hmac-v2:" + key).encode("utf-8")).digest()
+    return hmac.new(
+        pepper,
+        str(code).strip().upper().encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _recovery_code_hash_candidates(code):
+    # Existing codes remain usable during the transition; new codes use only HMAC.
+    return (_recovery_code_hash(code), _legacy_recovery_code_hash(code))
+
+
+def _migrate_legacy_recovery_code_hashes(db_path):
+    """Re-key active legacy hashes using the encrypted recovery-code backup.
+
+    Plaintext codes are available only after decrypting each account's existing
+    Fernet-protected backup. Used codes are not migrated or re-enabled.
+    """
+    try:
+        ensure_encrypted_recovery_backup_table(db_path)
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS security_schema_migrations (
+                    migration_key TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            done = conn.execute(
+                "SELECT 1 FROM security_schema_migrations WHERE migration_key=?",
+                ("recovery_code_hmac_v2",),
+            ).fetchone()
+            if done:
+                return
+            backups = conn.execute(
+                "SELECT username, encrypted_codes FROM staff_recovery_code_backups"
+            ).fetchall()
+            for username, encrypted_codes in backups:
+                try:
+                    codes = _decrypt_and_validate_recovery_backup(
+                        encrypted_codes, expected_count=None
+                    )
+                except (ValueError, RuntimeError):
+                    continue
+                for code in codes:
+                    conn.execute(
+                        """UPDATE staff_recovery_codes SET code_hash=?
+                           WHERE username=? COLLATE NOCASE AND code_hash=? AND used_at IS NULL""",
+                        (
+                            _recovery_code_hash(code),
+                            username,
+                            _legacy_recovery_code_hash(code),
+                        ),
+                    )
+            conn.execute(
+                "INSERT OR IGNORE INTO security_schema_migrations(migration_key) VALUES (?)",
+                ("recovery_code_hmac_v2",),
+            )
+    except RuntimeError:
+        # Authentication remains fail-closed elsewhere until the encryption key exists.
+        return
 
 
 def ensure_recovery_table(db_path):
@@ -286,6 +358,7 @@ def ensure_recovery_table(db_path):
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_staff_recovery_username ON staff_recovery_codes(username)")
+    _migrate_legacy_recovery_code_hashes(db_path)
 
 
 def ensure_encrypted_recovery_backup_table(db_path):
@@ -711,9 +784,9 @@ def identify_recovery_code(db_path, code):
         row = conn.execute(
             """SELECT r.username, u.role FROM staff_recovery_codes r
                JOIN app_users u ON u.username = r.username COLLATE NOCASE
-               WHERE r.code_hash=? AND r.used_at IS NULL AND u.active=1
+               WHERE r.code_hash IN (?,?) AND r.used_at IS NULL AND u.active=1
                  AND u.role IN ('admin','analyst') LIMIT 1""",
-            (_recovery_code_hash(code),),
+            _recovery_code_hash_candidates(code),
         ).fetchone()
     return (row[0], row[1]) if row else (None, None)
 
@@ -721,15 +794,15 @@ def identify_recovery_code(db_path, code):
 def consume_recovery_code_and_update(db_path, code, new_username, password_hash, password_salt):
     """Atomically consume a valid recovery code and update the same active staff account."""
     ensure_recovery_table(db_path)
-    digest = _recovery_code_hash(code)
+    digest, legacy_digest = _recovery_code_hash_candidates(code)
     with sqlite3.connect(db_path, timeout=10) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """SELECT r.id, r.username FROM staff_recovery_codes r
                JOIN app_users u ON u.username = r.username COLLATE NOCASE
-               WHERE r.code_hash=? AND r.used_at IS NULL AND u.active=1
+               WHERE r.code_hash IN (?,?) AND r.used_at IS NULL AND u.active=1
                  AND u.role IN ('admin','analyst') LIMIT 1""",
-            (digest,),
+            (digest, legacy_digest),
         ).fetchone()
         if not row:
             conn.rollback()
@@ -883,12 +956,14 @@ def consume_backup_code(db_path, username, code):
     value = str(code).strip()
     if len(value) != 8 or not value.isdigit():
         return False
-    digest = _recovery_code_hash(value)
+    digest, legacy_digest = _recovery_code_hash_candidates(value)
     with sqlite3.connect(db_path, timeout=10) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id FROM staff_recovery_codes WHERE username=? COLLATE NOCASE AND code_hash=? AND used_at IS NULL LIMIT 1",
-            (username, digest),
+            """SELECT id FROM staff_recovery_codes
+               WHERE username=? COLLATE NOCASE AND code_hash IN (?,?)
+                 AND used_at IS NULL LIMIT 1""",
+            (username, digest, legacy_digest),
         ).fetchone()
         if not row:
             conn.rollback()
