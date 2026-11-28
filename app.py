@@ -1154,9 +1154,11 @@ def check_password():
                 key="login_2fa_method",
             )
             if verification_method == drive_backup_method:
-                st.caption(
-                    "Use an 8-digit recovery code from the encrypted backup in your own Google Drive. "
-                    "Connect your Google Drive from the account sidebar first and upload a backup before relying on this option."
+                st.info(
+                    "This option does not generate a code during login. Enter one of your previously generated 8-digit recovery codes. "
+                    "To generate codes, sign in normally, open the left sidebar → 🔐 Generate 8-digit Recovery Codes, "
+                    "enter your current 6-digit authenticator code, and select Generate 10 Recovery Codes. "
+                    "Connect your own Google Drive first so the encrypted backup can be uploaded."
                 )
         else:
             st.write(f"Set up Authenticator 2FA for **{username}** using the 6-digit code.")
@@ -1252,12 +1254,15 @@ def _show_staff_recovery_codes():
 
 
 def _render_staff_recovery_management(db_path, username):
-    with st.expander("🔑 2FA Backup Codes"):
-        st.caption("Generate 10 new one-time 8-digit backup codes. This replaces and invalidates all previously generated codes.")
-        st.warning("Confirm your identity with the current authenticator code before replacing recovery codes.")
+    with st.expander("🔐 Generate 8-digit Recovery Codes", expanded=False):
+        st.caption(
+            "Generate 10 one-time 8-digit recovery codes. This replaces and invalidates all previously generated codes. "
+            "After generation, the codes appear in the sidebar under “Save your new recovery codes”."
+        )
+        st.warning("Enter your current 6-digit Authenticator app code to confirm your identity before generating new codes.")
         with st.form("regenerate_staff_recovery_codes_form"):
             current_totp = st.text_input("Current 6-digit authenticator code", max_chars=6, placeholder="000000")
-            regenerate = st.form_submit_button("Generate / Regenerate Recovery Codes", type="primary")
+            regenerate = st.form_submit_button("Generate 10 Recovery Codes", type="primary")
         if regenerate:
             if len(current_totp.strip()) == 6 and current_totp.strip().isdigit() and auth_security.verify_totp(db_path, username, current_totp.strip()):
                 codes = auth_security.generate_recovery_codes(db_path, username)
