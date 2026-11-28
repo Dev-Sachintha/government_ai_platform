@@ -69,6 +69,32 @@ def ensure_security_table(db_path):
         if "phone_verified" in columns:
             conn.execute("UPDATE staff_security SET phone_verified=0")
 
+        # Enforce one verified recovery email per account (case-insensitive).
+        seen_emails = set()
+        rows = conn.execute(
+            """SELECT username, lower(trim(recovery_email))
+               FROM staff_security
+               WHERE recovery_email_verified=1 AND trim(recovery_email)<>''
+               ORDER BY rowid"""
+        ).fetchall()
+        for email_owner, normalized_email in rows:
+            if normalized_email in seen_emails:
+                conn.execute(
+                    """UPDATE staff_security
+                       SET recovery_email='', recovery_email_verified=0,
+                           updated_at=CURRENT_TIMESTAMP
+                       WHERE username=? COLLATE NOCASE""",
+                    (email_owner,),
+                )
+            else:
+                seen_emails.add(normalized_email)
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS
+               uq_staff_security_verified_recovery_email
+               ON staff_security(lower(trim(recovery_email)))
+               WHERE recovery_email_verified=1 AND trim(recovery_email)<>''"""
+        )
+
 
 def totp_is_enabled(db_path, username):
     ensure_security_table(db_path)
@@ -325,14 +351,42 @@ def consume_recovery_code_and_update(db_path, code, new_username, password_hash,
             return False, "That username is already taken."
 
 
-def set_recovery_email(db_path, username, email):
-    """Save an email address only after the caller has verified its one-time code."""
+def is_recovery_email_available(db_path, email, username=None):
+    """Return True when no other account owns this verified recovery email."""
     ensure_security_table(db_path)
+    normalized = str(email).strip().lower()
+    if not normalized:
+        return False
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "UPDATE staff_security SET recovery_email=?, recovery_email_verified=1, updated_at=CURRENT_TIMESTAMP WHERE username=? COLLATE NOCASE AND enabled=1",
-            (str(email).strip().lower(), username),
-        )
+        query = """SELECT 1 FROM staff_security
+                   WHERE lower(trim(recovery_email))=?
+                     AND recovery_email_verified=1
+                     AND trim(recovery_email)<>''"""
+        params = [normalized]
+        if username:
+            query += " AND username<>? COLLATE NOCASE"
+            params.append(username)
+        return conn.execute(query + " LIMIT 1", params).fetchone() is None
+
+
+def set_recovery_email(db_path, username, email):
+    """Save a verified recovery email only if it is unique across accounts."""
+    ensure_security_table(db_path)
+    normalized = str(email).strip().lower()
+    if not normalized or not is_recovery_email_available(db_path, normalized, username):
+        return False
+    try:
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            cursor = conn.execute(
+                """UPDATE staff_security
+                   SET recovery_email=?, recovery_email_verified=1,
+                       updated_at=CURRENT_TIMESTAMP
+                   WHERE username=? COLLATE NOCASE AND enabled=1""",
+                (normalized, username),
+            )
+            return cursor.rowcount == 1
+    except sqlite3.IntegrityError:
+        return False
 
 
 def get_staff_by_recovery_email(db_path, email):
