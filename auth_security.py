@@ -348,11 +348,11 @@ def _google_drive_redirect_uri():
 
 def ensure_google_drive_oauth_table(db_path):
     with sqlite3.connect(db_path) as conn:
+        # Per-account OAuth grants: each staff/user account connects its own Drive.
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS google_drive_oauth_tokens (
-                id INTEGER PRIMARY KEY CHECK (id=1),
+            CREATE TABLE IF NOT EXISTS google_drive_oauth_tokens_per_user (
+                username TEXT PRIMARY KEY COLLATE NOCASE,
                 refresh_token_enc BLOB NOT NULL,
-                connected_by TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -417,7 +417,7 @@ def complete_google_drive_oauth(db_path, code, state, username):
     if not pending:
         raise RuntimeError("Google authorization state expired or was not recognized. Please connect again.")
     if str(pending[0]).casefold() != str(username).casefold():
-        raise RuntimeError("Sign in with the same Admin account that started Google Drive connection.")
+        raise RuntimeError("Sign in with the same account that started Google Drive connection.")
     if not pending[1]:
         raise RuntimeError("The PKCE verifier was not saved. Start Google Drive connection again.")
     try:
@@ -439,31 +439,32 @@ def complete_google_drive_oauth(db_path, code, state, username):
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            """INSERT INTO google_drive_oauth_tokens(id, refresh_token_enc, connected_by)
-               VALUES (1, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET
+            """INSERT INTO google_drive_oauth_tokens_per_user(username, refresh_token_enc)
+               VALUES (?, ?)
+               ON CONFLICT(username) DO UPDATE SET
                  refresh_token_enc=excluded.refresh_token_enc,
-                 connected_by=excluded.connected_by,
                  updated_at=CURRENT_TIMESTAMP""",
-            (encrypted, str(username)),
+            (str(username), encrypted),
         )
     with sqlite3.connect(db_path) as conn:
         conn.execute("DELETE FROM google_drive_oauth_pending WHERE state_hash=?", (state_hash,))
     return True
 
 
-def google_drive_oauth_connected(db_path):
+def google_drive_oauth_connected(db_path, username):
+    """Return whether this account has connected its own Google Drive."""
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
-        row = conn.execute("SELECT 1 FROM google_drive_oauth_tokens WHERE id=1").fetchone()
+        row = conn.execute(
+            "SELECT 1 FROM google_drive_oauth_tokens_per_user WHERE username=? COLLATE NOCASE",
+            (str(username),),
+        ).fetchone()
     return bool(row)
 
 
 def sync_recovery_codes_to_drive(db_path, username):
     """Upload the encrypted recovery-code blob using the owner's Google OAuth grant."""
-    folder_id = _setting("GOOGLE_DRIVE_BACKUP_FOLDER_ID").strip()
-    if not folder_id:
-        raise RuntimeError("Set GOOGLE_DRIVE_BACKUP_FOLDER_ID in Streamlit Secrets.")
+    # Each user's backup lives in their own Drive root; no shared folder ID needed.
     ensure_encrypted_recovery_backup_table(db_path)
     with sqlite3.connect(db_path) as conn:
         row = conn.execute(
@@ -475,7 +476,8 @@ def sync_recovery_codes_to_drive(db_path, username):
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
         token_row = conn.execute(
-            "SELECT refresh_token_enc FROM google_drive_oauth_tokens WHERE id=1"
+            "SELECT refresh_token_enc FROM google_drive_oauth_tokens_per_user WHERE username=? COLLATE NOCASE",
+            (str(username),),
         ).fetchone()
     if not token_row:
         return False
@@ -501,7 +503,7 @@ def sync_recovery_codes_to_drive(db_path, username):
         opaque_name = hashlib.sha256(
             ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
         ).hexdigest() + ".enc"
-        query = f"name='{opaque_name}' and '{folder_id}' in parents and trashed=false"
+        query = f"name='{opaque_name}' and trashed=false"
         found = drive.files().list(
             q=query, fields="files(id,name)", pageSize=5
         ).execute().get("files", [])
@@ -513,7 +515,7 @@ def sync_recovery_codes_to_drive(db_path, username):
             drive.files().update(fileId=found[0]["id"], media_body=media).execute()
         else:
             drive.files().create(
-                body={"name": opaque_name, "parents": [folder_id]},
+                body={"name": opaque_name},
                 media_body=media, fields="id"
             ).execute()
         return True
@@ -536,16 +538,14 @@ def consume_drive_backup_code(db_path, username, code):
     if len(value) != 8 or not value.isdigit():
         return False
 
-    folder_id = _setting("GOOGLE_DRIVE_BACKUP_FOLDER_ID").strip()
-    if not folder_id:
-        raise RuntimeError("Google Drive backup is not configured by the platform administrator.")
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
         token_row = conn.execute(
-            "SELECT refresh_token_enc FROM google_drive_oauth_tokens WHERE id=1"
+            "SELECT refresh_token_enc FROM google_drive_oauth_tokens_per_user WHERE username=? COLLATE NOCASE",
+            (str(username),),
         ).fetchone()
     if not token_row:
-        raise RuntimeError("Google Drive backup is not connected. Ask the platform administrator to connect it.")
+        raise RuntimeError("Connect your own Google Drive from the account sidebar before using Drive recovery.")
 
     try:
         from google.oauth2.credentials import Credentials
@@ -569,7 +569,7 @@ def consume_drive_backup_code(db_path, username, code):
         opaque_name = hashlib.sha256(
             ("govai-recovery-backup:" + str(username).casefold()).encode("utf-8")
         ).hexdigest() + ".enc"
-        query = f"name='{opaque_name}' and '{folder_id}' in parents and trashed=false"
+        query = f"name='{opaque_name}' and trashed=false"
         found = drive.files().list(
             q=query, fields="files(id)", pageSize=1
         ).execute().get("files", [])
