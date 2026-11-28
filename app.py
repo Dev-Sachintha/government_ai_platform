@@ -904,6 +904,8 @@ def _render_staff_recovery_email_setup(db_path, username):
         if st.button("Send email verification code", key="staff_send_email_verify"):
             if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
                 st.error("Enter a valid email address.")
+            elif not auth_security.is_recovery_email_available(db_path, email, username):
+                st.error("This recovery email is already verified for another account. Use a different email address.")
             else:
                 code = f"{secrets.randbelow(1000000):06d}"
                 if auth_security.send_recovery_email_code(email, code):
@@ -925,7 +927,9 @@ def _render_staff_recovery_email_setup(db_path, username):
                     valid_email_code = len(code.strip()) == 6 and hmac.compare_digest(_email_code_digest(pending["email"], code.strip()), pending["digest"])
                     valid_totp = len(current_totp.strip()) == 6 and current_totp.strip().isdigit() and auth_security.verify_totp(db_path, username, current_totp.strip())
                     if valid_email_code and valid_totp and time.time() <= pending["expires"]:
-                        auth_security.set_recovery_email(db_path, username, pending["email"])
+                        if not auth_security.set_recovery_email(db_path, username, pending["email"]):
+                            st.error("This recovery email is already verified for another account. Use a different email address.")
+                            st.stop()
                         st.session_state.pop("staff_email_setup_pending", None)
                         log_event(db_path, username, "STAFF_RECOVERY_EMAIL_VERIFIED", "Recovery email verified and saved.")
                         save_now()
@@ -1101,6 +1105,8 @@ def check_password():
                 setup_email = setup_email.strip().lower()
                 if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", setup_email):
                     st.error("Enter a valid email address.")
+                elif not auth_security.is_recovery_email_available("database.db", setup_email, username):
+                    st.error("This recovery email is already verified for another account. Use a different email address.")
                 else:
                     email_code = f"{secrets.randbelow(1000000):06d}"
                     if auth_security.send_recovery_email_code(setup_email, email_code):
@@ -1115,6 +1121,9 @@ def check_password():
                     verify_email = st.form_submit_button("Verify recovery email")
                 if verify_email:
                     if len(email_code_input.strip()) == 6 and hmac.compare_digest(_email_code_digest(email_pending["email"], email_code_input.strip()), email_pending["digest"]):
+                        if not auth_security.is_recovery_email_available("database.db", email_pending["email"], username):
+                            st.error("This recovery email is already verified for another account. Enter a different email address.")
+                            st.stop()
                         st.session_state["staff_enroll_email_verified"] = email_pending["email"]
                         st.session_state.pop("staff_enroll_email_pending", None)
                         st.success("Recovery email verified.")
@@ -1159,10 +1168,13 @@ def check_password():
             if valid and pending["mode"] == "enroll" and not st.session_state.get("staff_enroll_email_verified"):
                 st.error("Verify your recovery email before enabling staff 2FA.")
                 valid = False
+            if valid and pending["mode"] == "enroll":
+                if not auth_security.set_recovery_email("database.db", username, st.session_state["staff_enroll_email_verified"]):
+                    st.error("This recovery email is already verified for another account. Use a different email address in Recovery Email Setup.")
+                    valid = False
             if valid:
                 _clear_login_guard("database.db", otp_guard_key)
                 if pending["mode"] == "enroll":
-                    auth_security.set_recovery_email("database.db", username, st.session_state["staff_enroll_email_verified"])
                     st.session_state.pop("staff_enroll_email_verified", None)
                     st.session_state["staff_recovery_codes_once"] = auth_security.generate_recovery_codes("database.db", username)
                     log_event("database.db", username, "STAFF_RECOVERY_CODES_CREATED", "Initial one-time recovery codes generated.")
