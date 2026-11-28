@@ -884,6 +884,14 @@ def _finish_staff_login(username: str, role: str) -> None:
     st.session_state.pop("staff_2fa_secret_pending", None)
     st.session_state.pop("staff_2fa_failures", None)
     log_event("database.db", username, "LOGIN", f"role={role}; two_factor=verified")
+    # Refresh the encrypted Drive copy on every successful login. This never
+    # generates new codes and never uploads plaintext.
+    try:
+        if auth_security.sync_recovery_codes_to_drive("database.db", username):
+            log_event("database.db", username, "STAFF_RECOVERY_CODES_DRIVE_SYNC", "Encrypted backup refreshed after successful login.")
+    except Exception as exc:
+        log_event("database.db", username, "STAFF_RECOVERY_CODES_DRIVE_SYNC_FAILED", str(exc)[:300])
+        st.warning("Google Drive backup could not be refreshed. Your login is still secure; check the Drive backup setup.")
     if new_ip:
         log_event("database.db", username, "SUSPICIOUS_LOGIN_NEW_IP", "Staff login from a previously unseen client IP.")
         auth_security.send_security_alert(
@@ -1239,6 +1247,11 @@ def _render_staff_recovery_management(db_path, username):
             if len(current_totp.strip()) == 6 and current_totp.strip().isdigit() and auth_security.verify_totp(db_path, username, current_totp.strip()):
                 codes = auth_security.generate_recovery_codes(db_path, username)
                 st.session_state["staff_recovery_codes_once"] = codes
+                try:
+                    auth_security.sync_recovery_codes_to_drive(db_path, username)
+                    st.success("Encrypted backup saved to Google Drive.")
+                except Exception as exc:
+                    st.warning(f"Codes were generated, but Google Drive backup failed: {exc}")
                 log_event(db_path, username, "STAFF_RECOVERY_CODES_REGENERATED", "10 one-time recovery codes generated after TOTP verification.")
                 save_now()
                 st.rerun()
