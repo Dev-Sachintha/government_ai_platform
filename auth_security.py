@@ -476,21 +476,34 @@ def google_drive_oauth_connected(db_path, username):
 
 
 def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
-    """Decrypt a backup and validate its one-time recovery-code payload."""
+    """Decrypt and validate a recovery backup.
+
+    Initial generation requires exactly ten codes. After a code is consumed,
+    synchronization accepts the remaining unique codes (zero through ten).
+    """
     try:
         decoded = _fernet().decrypt(bytes(encrypted_blob)).decode("utf-8")
         codes = json.loads(decoded)
     except (InvalidToken, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise ValueError("Encrypted recovery backup could not be decrypted or parsed.") from exc
 
+    valid_count = (
+        len(codes) == expected_count
+        if expected_count is not None
+        else 0 <= len(codes) <= 10
+    ) if isinstance(codes, list) else False
     if (
-        not isinstance(codes, list)
-        or len(codes) != expected_count
+        not valid_count
         or any(not isinstance(code, str) or re.fullmatch(r"\d{8}", code) is None for code in codes)
-        or len(set(codes)) != expected_count
+        or len(set(codes)) != len(codes)
     ):
+        requirement = (
+            f"exactly {expected_count}"
+            if expected_count is not None
+            else "at most 10"
+        )
         raise ValueError(
-            f"Recovery backup must contain exactly {expected_count} unique 8-digit codes."
+            f"Recovery backup must contain {requirement} unique 8-digit codes."
         )
     return codes
 
@@ -520,8 +533,10 @@ def sync_recovery_codes_to_drive(db_path, username):
     if not row:
         return False
 
-    # Validate locally before sending anything to Drive. Plaintext is never uploaded.
-    local_codes = _decrypt_and_validate_recovery_backup(row[0], expected_count=10)
+    # Validate locally before sending anything to Drive. After one-time codes
+    # are consumed, the encrypted backup legitimately contains fewer than ten.
+    # Plaintext is never uploaded.
+    local_codes = _decrypt_and_validate_recovery_backup(row[0], expected_count=None)
 
     ensure_google_drive_oauth_table(db_path)
     with sqlite3.connect(db_path) as conn:
