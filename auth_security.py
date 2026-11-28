@@ -486,7 +486,7 @@ def _decrypt_and_validate_recovery_backup(encrypted_blob, expected_count=10):
     if (
         not isinstance(codes, list)
         or len(codes) != expected_count
-        or any(not isinstance(code, str) or re.fullmatch(r"\\d{8}", code) is None for code in codes)
+        or any(not isinstance(code, str) or re.fullmatch(r"\d{8}", code) is None for code in codes)
         or len(set(codes)) != expected_count
     ):
         raise ValueError(
