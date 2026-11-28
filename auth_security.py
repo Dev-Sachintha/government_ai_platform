@@ -364,6 +364,19 @@ def ensure_google_drive_oauth_table(db_path):
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # One-time migration: retain the old global grant for its recorded owner only.
+        legacy_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='google_drive_oauth_tokens'"
+        ).fetchone()
+        if legacy_exists:
+            legacy_columns = {row[1] for row in conn.execute("PRAGMA table_info(google_drive_oauth_tokens)")}
+            if {"refresh_token_enc", "connected_by"}.issubset(legacy_columns):
+                conn.execute("""
+                    INSERT OR IGNORE INTO google_drive_oauth_tokens_per_user(username, refresh_token_enc)
+                    SELECT connected_by, refresh_token_enc
+                    FROM google_drive_oauth_tokens
+                    WHERE id=1 AND trim(connected_by)<>''
+                """)
         columns = {row[1] for row in conn.execute("PRAGMA table_info(google_drive_oauth_pending)")}
         if "code_verifier_enc" not in columns:
             conn.execute(
@@ -522,7 +535,7 @@ def sync_recovery_codes_to_drive(db_path, username):
     except Exception as exc:
         logging.warning("Encrypted recovery-code Google Drive OAuth upload failed: %s", exc)
         raise RuntimeError(
-            f"Google Drive OAuth upload failed ({type(exc).__name__}). Check OAuth consent, Drive folder ID, and app logs."
+            f"Google Drive OAuth upload failed ({type(exc).__name__}). Check OAuth consent and app logs."
         ) from exc
 
 
