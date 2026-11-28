@@ -11,3 +11,19 @@ android_companion/.gradle/
 android_companion/.idea/
 android_companion/**/build/
 android_companion/local.properties
+
+# Local databases, backups, and sensitive credentials
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db.gz
+*.pem
+*.key
+*.p12
+*.pfx
+token.json
+credentials.json
