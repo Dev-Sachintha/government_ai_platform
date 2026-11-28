@@ -72,12 +72,11 @@
   }
   try { nameEl.value = localStorage.getItem('gov_pc_name') || ''; } catch (e) {}
   if (autoConfig.enabled) {
-    keyEl.value = autoConfig.pairing_key || '';
-    nameEl.value = autoConfig.login_user || 'User';
-    keyEl.readOnly = true;
+    nameEl.value = 'Signed-in staff account';
+    keyEl.style.display = 'none';
+    keyEl.previousElementSibling.style.display = 'none';
     nameEl.readOnly = true;
-    keyEl.placeholder = 'Pairing key supplied securely';
-    $('status').textContent = 'Automatic setup ready for account: ' + nameEl.value + '. Click Start and approve the screen-sharing prompt.';
+    $('status').textContent = 'Secure one-time setup ready. Click Start and approve the screen-sharing prompt.';
   }
 
   let stream = null, track = null, capture = null, ticker = null, busy = false, lastHb = 0, key = '', stopping = false;
@@ -97,6 +96,18 @@
   }
   function osName() {
     return (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+  }
+
+  async function obtainSession() {
+    if (!autoConfig.enabled) return;
+    const response = await fetch('/v1/pc/session', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ launch: autoConfig.launch, device_id: deviceId }),
+    });
+    if (!response.ok) throw new Error(response.status === 401 ? 'This one-time link expired or was already used. Generate a new link.' : 'Could not create a secure browser session.');
+    const data = await response.json();
+    key = data.session_token;
+    nameEl.value = data.login_user || nameEl.value;
   }
 
   async function heartbeat() {
@@ -170,8 +181,8 @@
   }
 
   async function start() {
-    key = keyEl.value.trim();
-    if (key.length < 32) { say('Enter the pairing key (it is at least 32 characters long).', true); return; }
+    key = autoConfig.enabled ? '' : keyEl.value.trim();
+    if (!autoConfig.enabled && key.length < 32) { say('Enter the pairing key (it is at least 32 characters long).', true); return; }
     if (!nameEl.value.trim()) { say('Enter a name for this computer.', true); return; }
     try { localStorage.setItem('gov_pc_name', nameEl.value.trim()); } catch (e) {}
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -180,6 +191,7 @@
     startBtn.disabled = true;
     say('Checking the connection...');
     try {
+      if (autoConfig.enabled) await obtainSession();
       const r = await heartbeat();
       if (r.status === 401) { say('The pairing key is wrong.', true); startBtn.disabled = false; return; }
       if (!r.ok) { say('Server answered HTTP ' + r.status + '.', true); startBtn.disabled = false; return; }
